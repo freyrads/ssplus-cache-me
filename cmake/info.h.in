@@ -1,0 +1,8 @@
+#ifndef INFO_H
+#define INFO_H
+
+#ifndef PROGRAM_NAME
+#define PROGRAM_NAME "@CMAKE_PROJECT_NAME@"
+#endif // PROGRAM_NAME
+
+#endif // INFO_H
