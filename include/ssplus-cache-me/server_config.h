@@ -2,6 +2,7 @@
 #define SERVER_CONFIG_H
 
 #include <string>
+
 namespace ssplus_cache_me::server {
 
 struct server_config_t {

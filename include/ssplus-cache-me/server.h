@@ -1,10 +1,13 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#include "ssplus-cache-me/debug.h"
 #include "ssplus-cache-me/server_config.h"
 #include "uWebSockets/src/App.h"
 #include <sqlite3.h>
 #include <thread>
+
+#define _SF_SOURCE_FILE_ DEFAULT_DEBUG_INCLUDE_DIRNAME __FILE_NAME__
 
 namespace ssplus_cache_me::server {
 
@@ -127,5 +130,7 @@ public:
 ////////////////////////////////////////
 
 } // namespace ssplus_cache_me::server
+
+#undef _SF_SOURCE_FILE_
 
 #endif // SERVER_H

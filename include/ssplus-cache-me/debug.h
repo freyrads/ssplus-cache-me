@@ -4,10 +4,13 @@
 #include <cstdio>
 #include <iostream>
 
+#define DEFAULT_DEBUG_DIRNAME "src/ssplus-cache-me/"
+#define DEFAULT_DEBUG_INCLUDE_DIRNAME "include/ssplus-cache-me/"
+
 #define DECLARE_DEBUG_INFO(DIRNAME)                                            \
   constexpr const char _SF_SOURCE_FILE_[] = DIRNAME __FILE_NAME__
 
-#define DECLARE_DEBUG_INFO_DEFAULT() DECLARE_DEBUG_INFO("src/ssplus-cache-me/")
+#define DECLARE_DEBUG_INFO_DEFAULT() DECLARE_DEBUG_INFO(DEFAULT_DEBUG_DIRNAME)
 
 #define DEBUG_WHERE                                                            \
   _SF_SOURCE_FILE_ << ':' << __LINE__ << ' ' << __FUNCTION__ << ": "

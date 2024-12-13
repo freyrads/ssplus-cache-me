@@ -2,12 +2,15 @@
 #include "nlohmann/json.hpp"
 #include "ssplus-cache-me/info.h"
 #include "ssplus-cache-me/server_manager.h"
+#include "ssplus-cache-me/util.h"
 #include "ssplus-cache-me/version.h"
 #include <condition_variable>
 #include <csignal>
 #include <mutex>
 #include <stdio.h>
 #include <thread>
+
+DECLARE_DEBUG_INFO_DEFAULT();
 
 namespace ssplus_cache_me {
 
@@ -43,34 +46,60 @@ static void sigint_handler(int) {
 static int run_query(std::string_view query) { return 0; }
 
 static void run_queued_queries() {
-  auto i = main_state.write_queries.begin();
-  while (i != main_state.write_queries.end()) {
-    if (run_query(*i) != 0) {
-      i++;
-      continue;
+  int status = 0;
+  query_schedule_t i;
+
+  do {
+    {
+      std::lock_guard lk(main_state.mm);
+
+      if (main_state.write_queries.empty())
+        return;
+
+      i = main_state.write_queries.top();
+      main_state.write_queries.pop();
     }
 
-    i = main_state.write_queries.erase(i);
-  }
+    if ((status = run_query(i.query)) != 0 && i.err_cb) {
+      i.err_cb(status, i);
+    }
+
+  } while (true);
 }
 
 static void main_loop() {
   while (main_state.running) {
-    std::unique_lock lk(main_state.mm);
+    {
+      std::unique_lock lk(main_state.mm);
 
-    main_state.mcv.wait(lk, [] {
-      return !main_state.write_queries.empty() || !main_state.running;
-    });
+      if (!main_state.write_queries.empty()) {
+        auto top_sch = main_state.write_queries.top().ts;
 
-    // spurious wake guard
-    if (main_state.write_queries.empty())
-      continue;
+        if (top_sch > util::get_current_ts()) {
+          main_state.mcv.wait_until(lk, , [top_sch] {
+            return top_sch != main_state.write_queries.top().ts ||
+                   !main_state.running;
+          });
+
+          if (top_sch != main_state.write_queries.top().ts)
+            continue;
+        }
+      } else
+        main_state.mcv.wait(lk, [] {
+          return !main_state.write_queries.empty() || !main_state.running;
+        });
+
+      // spurious wake guard
+      if (main_state.write_queries.empty() ||
+          main_state.write_queries.top().ts > util::get_current_ts())
+        continue;
+    }
 
     run_queued_queries();
   }
 }
 
-static void init_db() {
+static int init_db() {
   std::lock_guard lk(main_state.mm);
 
   // open main conn
@@ -94,7 +123,10 @@ int run(const int argc, const char *argv[]) {
 
   server::server_config_t sconf{};
 
-  init_db();
+  if (init_db() != 0) {
+    log::io() << DEBUG_WHERE << "Failed initializing database\n";
+    return 1;
+  }
 
   server_manager_t<false> smanager;
   server_manager_t<true> ssl_smanager;

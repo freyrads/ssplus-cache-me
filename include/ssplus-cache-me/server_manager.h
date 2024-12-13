@@ -5,7 +5,7 @@
 #include "ssplus-cache-me/log.h"
 #include "ssplus-cache-me/server.h"
 
-DECLARE_DEBUG_INFO_DEFAULT();
+#define _SF_SOURCE_FILE_ DEFAULT_DEBUG_INCLUDE_DIRNAME __FILE_NAME__
 
 namespace ssplus_cache_me {
 
@@ -33,5 +33,7 @@ public:
 };
 
 } // namespace ssplus_cache_me
+
+#undef _SF_SOURCE_FILE_
 
 #endif // SERVER_MANAGER_H
