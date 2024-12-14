@@ -25,7 +25,7 @@ void print_info() {
   fprintf(stderr, "uWebSockets@%d.%d.%d, ", UWEBSOCKETS_VERSION_MAJOR,
           UWEBSOCKETS_VERSION_MINOR, UWEBSOCKETS_VERSION_PATCH);
 
-  // fprintf(stderr, "sqlite3@%d.%d.%d, ", , , );
+  fprintf(stderr, "sqlite3@" SQLITE_VERSION ", ");
 
   fprintf(stderr, "nlohmann/json@%d.%d.%d (%s)", NLOHMANN_JSON_VERSION_MAJOR,
           NLOHMANN_JSON_VERSION_MINOR, NLOHMANN_JSON_VERSION_PATCH,
@@ -43,9 +43,11 @@ static void sigint_handler(int) {
   main_state.mcv.notify_all();
 }
 
+// write_query_routine /////////////////
+
 static int run_query(std::string_view query) { return 0; }
 
-static void run_queued_queries() {
+static void run_queued_queries(const bool shutdown = false) {
   int status = 0;
   query_schedule_t i;
 
@@ -57,45 +59,65 @@ static void run_queued_queries() {
         return;
 
       i = main_state.write_queries.top();
+      if (!shutdown && i.ts > util::get_current_ts())
+        return;
+
       main_state.write_queries.pop();
     }
 
     if ((status = run_query(i.query)) != 0 && i.err_cb) {
       i.err_cb(status, i);
+      status = 0;
+    }
+
+    if (status != 0) {
+      log::io() << DEBUG_WHERE
+                << "Unhandled Scheduled Query with status: " << status
+                << "\nq: " << i.query << "\n";
+      status = 0;
     }
 
   } while (true);
 }
 
+static void write_query_routine() {
+  {
+    std::unique_lock lk(main_state.mm);
+
+    if (!main_state.write_queries.empty()) {
+      auto top_sch = main_state.write_queries.top().ts;
+
+      if (top_sch > util::get_current_ts()) {
+        main_state.mcv.wait_until(
+            lk, std::chrono::system_clock::from_time_t(top_sch), [&top_sch] {
+              return top_sch != main_state.write_queries.top().ts ||
+                     !main_state.running;
+            });
+
+        // spurious wake guard
+        if (main_state.write_queries.empty() ||
+            top_sch != main_state.write_queries.top().ts)
+          return;
+      }
+    } else
+      main_state.mcv.wait(lk, [] {
+        return !main_state.write_queries.empty() || !main_state.running;
+      });
+
+    // spurious wake guard
+    if (main_state.write_queries.empty() ||
+        main_state.write_queries.top().ts > util::get_current_ts())
+      return;
+  }
+
+  run_queued_queries();
+}
+
+////////////////////////////////////////
+
 static void main_loop() {
   while (main_state.running) {
-    {
-      std::unique_lock lk(main_state.mm);
-
-      if (!main_state.write_queries.empty()) {
-        auto top_sch = main_state.write_queries.top().ts;
-
-        if (top_sch > util::get_current_ts()) {
-          main_state.mcv.wait_until(lk, , [top_sch] {
-            return top_sch != main_state.write_queries.top().ts ||
-                   !main_state.running;
-          });
-
-          if (top_sch != main_state.write_queries.top().ts)
-            continue;
-        }
-      } else
-        main_state.mcv.wait(lk, [] {
-          return !main_state.write_queries.empty() || !main_state.running;
-        });
-
-      // spurious wake guard
-      if (main_state.write_queries.empty() ||
-          main_state.write_queries.top().ts > util::get_current_ts())
-        continue;
-    }
-
-    run_queued_queries();
+    write_query_routine();
   }
 }
 
@@ -108,7 +130,7 @@ static int init_db() {
 static void shutdown_db() {
   std::lock_guard lk(main_state.mm);
 
-  run_queued_queries();
+  run_queued_queries(true);
 
   // close conn
 }
