@@ -100,6 +100,7 @@ endif()
 
 target_link_libraries(${MAIN_EXE}
 	${USOCKETS_A}
+	sqlite3
 	ssl
 	crypto
 	z

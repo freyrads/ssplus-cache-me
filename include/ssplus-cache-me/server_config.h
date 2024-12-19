@@ -2,6 +2,7 @@
 #define SERVER_CONFIG_H
 
 #include <string>
+#include <vector>
 
 namespace ssplus_cache_me::server {
 
@@ -9,6 +10,9 @@ struct server_config_t {
   int port;
   std::string certfile;
   std::string pemfile;
+  std::vector<std::string> cors_enabled_origins;
+
+  std::string db_path;
 
   server_config_t() : port(3000) {}
 

@@ -12,7 +12,14 @@ namespace ssplus_cache_me {
 struct query_schedule_t {
   uint64_t ts;
   std::string query;
+
+  // stepping and finalizing is entirely user controlled
+  std::function<int(sqlite3_stmt *, const query_schedule_t &)> run;
+
+  // handles prepare statement and run error, nullable
   std::function<void(int, const query_schedule_t &)> err_cb;
+
+  query_schedule_t() : ts(0) {}
 };
 
 inline auto query_schedule_cmp_t = [](const query_schedule_t &a,
@@ -31,15 +38,19 @@ struct main_t {
   std::condition_variable_any mcv;
 
   // write only conn
+  // not protected by mutex because who else gonna
+  // use this other than the main thread
   sqlite3 *db;
+
+  // should lock mm to modify this
   write_query_queue_t write_queries;
 
-  main_t() : write_queries(query_schedule_cmp_t) {}
+  main_t() : db(nullptr), write_queries(query_schedule_cmp_t) {}
 };
 
 int run(const int argc, const char *argv[]);
 
-main_t *get_main_state();
+main_t *get_main_state() noexcept;
 
 } // namespace ssplus_cache_me
 

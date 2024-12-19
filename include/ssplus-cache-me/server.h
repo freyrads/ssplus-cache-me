@@ -1,19 +1,53 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#include "db.h"
 #include "ssplus-cache-me/debug.h"
+#include "ssplus-cache-me/log.h"
 #include "ssplus-cache-me/server_config.h"
 #include "uWebSockets/src/App.h"
 #include <sqlite3.h>
 #include <thread>
 
+/*#define _DEV*/
+
 #define _SF_SOURCE_FILE_ DEFAULT_DEBUG_INCLUDE_DIRNAME __FILE_NAME__
+
+// maybe these should be configurable
+
+// a day
+#define CORS_VALID_FOR "86400"
+// #define REQUIRE_ORIGIN_HEADER
 
 namespace ssplus_cache_me::server {
 
-// server_t
+inline constexpr const struct {
+  const char *OK_200 = "200 OK";
+  const char *NO_CONTENT_204 = "204 No Content";
+  const char *NOT_MODIFIED_304 = "304 Not Modified";
+  const char *BAD_REQUEST_400 = "400 Bad Request";
+  const char *UNAUTHORIZED_401 = "401 Unauthorized";
+  const char *FORBIDDEN_403 = "403 Forbidden";
+  const char *NOT_FOUND_404 = "404 Not Found";
+  const char *INTERNAL_SERVER_ERROR_500 = "500 Internal Server Error";
+} http_status_t;
+
+inline constexpr const struct {
+  const char *content_type = "Content-Type";
+} header_key_t;
+
+inline constexpr const struct {
+  const char *json = "application/json";
+} content_type_t;
+
+using header_v_t = std::vector<std::pair<std::string, std::string>>;
+
+// server_t ////////////////////////////
 
 template <bool WITH_SSL> class server_t {
+  using uws_response_t = uWS::HttpResponse<WITH_SSL>;
+  using uws_request_t = uWS::HttpRequest;
+
   int id;
 
   server_config_t conf;
@@ -21,19 +55,30 @@ template <bool WITH_SSL> class server_t {
   std::thread *sthread;
   sqlite3 *db_conn;
 
+#ifndef _DEV
   uWS::TemplatedApp<WITH_SSL> *sapp;
+#else
+  uWS::TemplatedApp<false> *sapp;
+#endif // _DEV
   uWS::Loop *sloop;
   us_listen_socket_t *slisten_socket;
 
+  static inline const header_v_t cors_default_additional_headers = {
+      {"Access-Control-Expose-Headers", "Content-Length,Content-Range"}};
+
+  static inline const std::string cors_default_allow_headers =
+      "DNT,User-Agent,X-Requested-With,If-Modified-Since,"
+      "Cache-Control,Content-Type,Range";
+
   void main() {
     if (!valid())
-      throw std::runtime_error("Invalid instance");
+      throw std::runtime_error(get_id_for_log() + "Invalid instance");
 
-    if (init_db() != 0) {
-      throw std::runtime_error("Failed initializing db");
-    }
+    if (init_db() != 0)
+      throw std::runtime_error(get_id_for_log() + "Failed initializing db");
 
     init_server();
+
     run();
   }
 
@@ -44,55 +89,89 @@ template <bool WITH_SSL> class server_t {
     sthread = new std::thread([this] { main(); });
   }
 
-  int init_db() noexcept { return 0; }
+  int init_db() noexcept {
+    // open conn
+    int status = db::init(conf.db_path.c_str(), &db_conn);
 
-  int shutdown_db() noexcept { return 0; }
+    if (status != SQLITE_OK) {
+      if (db_conn == nullptr)
+        log::io() << get_id_for_log() << "Db conn closed\n";
+      else
+        log::io() << get_id_for_log() << "Error with status(" << status
+                  << ") but db conn was NOT closed\n";
+    }
+
+    return status;
+  }
+
+  int shutdown_db() noexcept {
+    int status = 0;
+
+    const auto lstr = get_id_for_log();
+    log::io() << lstr << "Shutting down db conn\n";
+
+    if (db_conn) {
+      status = db::close(&db_conn);
+
+      switch (status) {
+      case SQLITE_OK:
+        log::io() << lstr << "Db conn closed\n";
+        break;
+      case SQLITE_BUSY:
+        log::io() << lstr << "Db conn is busy and left intact\n";
+        break;
+      default:
+        log::io() << lstr
+                  << "Closing db conn returned unknown status: " << status
+                  << "\n";
+      }
+    } else
+      log::io() << lstr << "Db conn was never made\n";
+
+    return status;
+  }
 
   void init_server() {
     sapp = new uWS::TemplatedApp<WITH_SSL>{};
 
-    sloop = uWS::Loop::get();
+    register_routes();
 
-    //
+    sapp->listen(conf.port, [this](us_listen_socket_t *listen_socket) {
+      if (listen_socket) {
+        slisten_socket = listen_socket;
+        log::io() << get_id_for_log() << "Listening on port " << conf.port
+                  << "\n";
+      } else
+        log::io() << DEBUG_WHERE << get_id_for_log()
+                  << "Listening socket is null\n";
+    });
+
+    sloop = uWS::Loop::get();
   }
 
-  void run() { sapp->run(); }
+  void run() {
+    sapp->run();
+
+    delete sapp;
+    sapp = nullptr;
+  }
 
   void shutdown_server() {
-    if (sapp == nullptr)
+    if (sapp)
+      defer([this] { sapp->close(); });
+
+    if (sthread == nullptr)
       return;
 
-    defer([this] { sapp->close(); });
-  }
+    if (sthread->joinable())
+      sthread->join();
 
-  bool valid() noexcept { return id >= 0; }
+    delete sthread;
+    sthread = nullptr;
+  }
 
 public:
-  server_t() noexcept : id(-1) { init(); };
-
-  server_t(int _id) noexcept : id(_id) { init(); };
-
-  ~server_t() {
-    shutdown_server();
-
-    if (sthread && sthread->joinable()) {
-      sthread->join();
-      delete sthread;
-      sthread = nullptr;
-    }
-
-    shutdown_db();
-
-    slisten_socket = nullptr;
-    sloop = nullptr;
-
-    if (sapp) {
-      delete sapp;
-      sapp = nullptr;
-    }
-  }
-
-  void init(int _id) noexcept {
+  void init(int _id = -1) noexcept {
     if (_id != -1)
       id = _id;
 
@@ -103,6 +182,21 @@ public:
     sloop = nullptr;
     slisten_socket = nullptr;
   }
+
+  server_t() noexcept : id(-1) { init(); };
+
+  server_t(int _id) noexcept : id(_id) { init(); };
+
+  ~server_t() {
+    shutdown_server();
+
+    shutdown_db();
+
+    slisten_socket = nullptr;
+    sloop = nullptr;
+  }
+
+  bool valid() const noexcept { return id >= 0; }
 
   int start() {
     if (!valid())
@@ -125,6 +219,146 @@ public:
     sloop->defer(task);
     return 0;
   }
+
+  std::string get_id_for_log() const {
+    constexpr int bufsz = 16;
+    char ret[bufsz];
+    snprintf(ret, bufsz, "[server:%3d] ", id);
+
+    return std::string(ret);
+  }
+
+  ////////////////////////////////////////
+
+  // setup routes
+  void register_routes() {
+    auto any_any = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      res->writeStatus(http_status_t.NOT_FOUND_404);
+      write_headers(res, cors_headers);
+      res->end();
+    };
+
+    auto options_cors = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req,
+                               {
+                                   {"Access-Control-Max-Age", CORS_VALID_FOR},
+                               });
+
+      if (cors_headers.empty())
+        return;
+
+      res->writeStatus(http_status_t.NO_CONTENT_204);
+      write_headers(res, cors_headers);
+      res->end();
+    };
+
+    sapp->any("/*", any_any);
+    sapp->options("/*", options_cors);
+    sapp->head("/*", options_cors);
+  }
+
+  // util methods ////////////////////////
+  static inline header_v_t
+  get_cors_headers(std::string_view req_allow_headers) {
+    std::string allow_headers = cors_default_allow_headers;
+
+    if (!req_allow_headers.empty()) {
+      allow_headers += ',';
+      allow_headers += req_allow_headers;
+    }
+
+    return {
+        {"Access-Control-Allow-Methods", "HEAD, GET, POST, OPTIONS"},
+        {"Access-Control-Allow-Headers", allow_headers},
+        {"Access-Control-Allow-Credentials", "true"},
+        // other security headers
+        {"X-Content-Type-Options", "nosniff"},
+        {"X-XSS-Protection", "1; mode=block"},
+    };
+  }
+
+  // somewhat of a middleware ////////////
+  header_v_t
+  cors(uws_response_t *res, uws_request_t *req,
+       const header_v_t &additional_headers = cors_default_additional_headers) {
+    std::string_view origin = req->getHeader("origin");
+
+    bool has_origin = !origin.empty();
+
+#ifdef REQUIRE_ORIGIN_HEADER
+    if (!has_origin) {
+      auto m = req->getMethod();
+      if (m != "get" && m != "head") {
+        res->writeStatus(http_status_t.BAD_REQUEST_400);
+        res->end("Missing Origin header");
+
+        return {};
+      }
+
+      // origin = "*";
+      // has_origin = true;
+    }
+#endif // REQUIRE_ORIGIN_HEADER
+
+    std::string_view host = req->getHeader("host");
+
+    bool has_host = !host.empty();
+
+    bool allow =
+        has_origin ? has_host ? (host.find(origin) == 0) : origin == "*" : true;
+
+    if (!allow) {
+      for (const std::string &s : conf.cors_enabled_origins) {
+        if (origin != s)
+          continue;
+
+        allow = true;
+        break;
+      }
+    }
+
+    if (!allow) {
+      res->writeStatus(http_status_t.FORBIDDEN_403);
+      res->end("Disallowed Origin");
+      return {};
+    }
+
+    header_v_t headers = {};
+    if (has_origin) {
+      headers.push_back({"Access-Control-Allow-Origin", std::string(origin)});
+    }
+
+    std::string_view req_allow_headers =
+        req->getHeader("access-control-request-headers");
+
+    for (const std::pair<std::string, std::string> &s :
+         get_cors_headers(req_allow_headers)) {
+      headers.push_back(s);
+    }
+
+    for (const std::pair<std::string, std::string> &s : additional_headers) {
+      headers.push_back(s);
+    }
+
+    return headers;
+  }
+
+  static inline void set_content_type_json(uws_response_t *res) {
+    res->writeHeader(header_key_t.content_type, content_type_t.json);
+  }
+
+  static inline void write_headers(uws_response_t *res,
+                                   const header_v_t &headers) {
+    for (const std::pair<std::string, std::string> &s : headers) {
+      res->writeHeader(s.first, s.second);
+    }
+  }
+
+  ////////////////////////////////////////
 };
 
 ////////////////////////////////////////

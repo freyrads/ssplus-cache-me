@@ -10,6 +10,7 @@ namespace ssplus_cache_me::cache {
 
 struct data_t {
   std::string value;
+  // unix timestamp in ms
   uint64_t expires_at;
 
   data_t();

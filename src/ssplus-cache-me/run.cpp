@@ -1,5 +1,6 @@
 #include "ssplus-cache-me/run.h"
 #include "nlohmann/json.hpp"
+#include "ssplus-cache-me/db.h"
 #include "ssplus-cache-me/info.h"
 #include "ssplus-cache-me/server_manager.h"
 #include "ssplus-cache-me/util.h"
@@ -7,6 +8,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <mutex>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <thread>
 
@@ -45,7 +47,28 @@ static void sigint_handler(int) {
 
 // write_query_routine /////////////////
 
-static int run_query(std::string_view query) { return 0; }
+static int run_query(const query_schedule_t &q) {
+  sqlite3_stmt *stmt = nullptr;
+
+  int status =
+      sqlite3_prepare_v2(main_state.db, q.query.c_str(), -1, &stmt, NULL);
+
+  if (status != SQLITE_OK) {
+    log::io() << "Error preparing statement (" << status << "): " << q.query
+              << "\n";
+
+    return status;
+  }
+
+  if (stmt == nullptr) {
+    // no thought, head empty
+    return 0;
+  }
+
+  status = q.run(stmt, q);
+
+  return status;
+}
 
 static void run_queued_queries(const bool shutdown = false) {
   int status = 0;
@@ -65,14 +88,13 @@ static void run_queued_queries(const bool shutdown = false) {
       main_state.write_queries.pop();
     }
 
-    if ((status = run_query(i.query)) != 0 && i.err_cb) {
+    if ((status = run_query(i)) != 0 && i.err_cb) {
       i.err_cb(status, i);
       status = 0;
     }
 
     if (status != 0) {
-      log::io() << DEBUG_WHERE
-                << "Unhandled Scheduled Query with status: " << status
+      log::io() << "Unhandled Scheduled Query with status: " << status
                 << "\nq: " << i.query << "\n";
       status = 0;
     }
@@ -121,18 +143,52 @@ static void main_loop() {
   }
 }
 
-static int init_db() {
-  std::lock_guard lk(main_state.mm);
+static int init_db(const char *path) {
+  db::setup();
+
+  log::io() << "Initializing main db conn\n";
 
   // open main conn
+  int status = db::init(path, &main_state.db);
+
+  if (status != SQLITE_OK) {
+    auto &os = log::io() << "Error with status(" << status << ")";
+
+    if (main_state.db == nullptr)
+      os << ", main db conn closed\n";
+    else
+      os << " but main db conn is NOT closed\n";
+  }
+
+  return status;
 }
 
-static void shutdown_db() {
-  std::lock_guard lk(main_state.mm);
+static int shutdown_db() {
+  int status = 0;
 
+  log::io() << "Shutting down main db conn\n";
+
+  // finish all enqueued queries before shutdown
   run_queued_queries(true);
 
-  // close conn
+  if (main_state.db) {
+    status = db::close(&main_state.db);
+
+    switch (status) {
+    case SQLITE_OK:
+      log::io() << "Main db conn closed\n";
+      break;
+    case SQLITE_BUSY:
+      log::io() << "Main db conn is busy and left intact\n";
+      break;
+    default:
+      log::io() << "Closing main db conn returned unknown status: " << status
+                << "\n";
+    }
+  } else
+    log::io() << "Main db conn was never made\n";
+
+  return status;
 }
 
 int run(const int argc, const char *argv[]) {
@@ -145,8 +201,13 @@ int run(const int argc, const char *argv[]) {
 
   server::server_config_t sconf{};
 
-  if (init_db() != 0) {
-    log::io() << DEBUG_WHERE << "Failed initializing database\n";
+  sconf.db_path = "cache.sqlite3";
+
+  // TODO: parse args here
+
+  // TODO: make db filename configurable
+  if (init_db(sconf.db_path.c_str()) != 0) {
+    log::io() << "Failed initializing database\n";
     return 1;
   }
 
@@ -169,6 +230,13 @@ int run(const int argc, const char *argv[]) {
   return 0;
 }
 
-main_t *get_main_state() { return &main_state; }
+main_t *get_main_state() noexcept { return &main_state; }
+
+void enqueue_write_query(const query_schedule_t &q) {
+  std::lock_guard lk(main_state.mm);
+
+  main_state.write_queries.emplace(std::move(q));
+  main_state.mcv.notify_one();
+}
 
 } // namespace ssplus_cache_me

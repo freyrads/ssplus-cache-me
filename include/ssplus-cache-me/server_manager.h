@@ -10,7 +10,8 @@
 namespace ssplus_cache_me {
 
 template <bool WITH_SSL> class server_manager_t {
-  std::vector<server::server_t<WITH_SSL>> instances;
+  using instances_t = std::vector<std::unique_ptr<server::server_t<WITH_SSL>>>;
+  instances_t instances;
 
 public:
   int run(int _concurrency, const server::server_config_t &_conf) {
@@ -22,8 +23,11 @@ public:
       return -2;
     }
 
+    instances.reserve(_concurrency);
+
     for (int i = 0; i < _concurrency; i++) {
-      instances.emplace_back(i).start(_conf);
+      instances.emplace_back(std::make_unique<server::server_t<WITH_SSL>>(i))
+          ->start(_conf);
     }
 
     return 0;
