@@ -8,9 +8,9 @@ namespace ssplus_cache_me::cache {
 
 data_t::data_t() : expires_at(0) {}
 
-bool data_t::empty() { return value.empty() && expires_at == 0; }
+bool data_t::empty() const { return value.empty() && expires_at == 0; }
 
-bool data_t::expired() {
+bool data_t::expired() const {
   return expires_at <=
          static_cast<uint64_t>(
              std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -22,6 +22,21 @@ void data_t::clear() {
   value.clear();
   expires_at = 0;
 }
+
+void data_t::mark_cached() {
+  if (expires_at == 0)
+    expires_at = 1;
+}
+
+bool data_t::cached() const { return expires_at != 0 || !value.empty(); }
+
+std::string data_t::from_json_str() {}
+
+nlohmann::json data_t::from_json() {}
+
+nlohmann::json data_t::to_json() const {}
+
+std::string data_t::to_json_str() const {}
 
 ////////////////////////////////////////////////////////////////////////////////
 

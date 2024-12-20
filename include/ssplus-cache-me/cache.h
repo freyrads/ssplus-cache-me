@@ -1,6 +1,7 @@
 #ifndef CACHE_H
 #define CACHE_H
 
+#include "nlohmann/json.hpp"
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -15,9 +16,18 @@ struct data_t {
 
   data_t();
 
-  bool empty();
-  bool expired();
+  bool empty() const;
+  bool expired() const;
   void clear();
+
+  void mark_cached();
+  bool cached() const;
+
+  std::string from_json_str();
+  nlohmann::json from_json();
+
+  nlohmann::json to_json() const;
+  std::string to_json_str() const;
 };
 
 using cache_map_t = std::unordered_map<std::string, data_t>;

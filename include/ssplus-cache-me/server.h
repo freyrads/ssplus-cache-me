@@ -1,7 +1,9 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#include "cache.h"
 #include "db.h"
+#include "nlohmann/json.hpp"
 #include "ssplus-cache-me/debug.h"
 #include "ssplus-cache-me/log.h"
 #include "ssplus-cache-me/server_config.h"
@@ -47,6 +49,49 @@ using header_v_t = std::vector<std::pair<std::string, std::string>>;
 template <bool WITH_SSL> class server_t {
   using uws_response_t = uWS::HttpResponse<WITH_SSL>;
   using uws_request_t = uWS::HttpRequest;
+
+  // http_response_t /////////////////////
+
+  struct http_response_t {
+    uws_response_t *res;
+    const char *status;
+
+    header_v_t headers;
+    std::string data;
+
+    http_response_t() : res(nullptr), status(http_status_t.OK_200) {}
+
+    explicit http_response_t(uws_response_t *_res)
+        : res(_res), status(http_status_t.OK_200) {}
+
+    explicit http_response_t(uws_response_t *_res, const header_v_t &_headers)
+        : res(_res), headers(_headers), status(http_status_t.OK_200) {}
+
+    ~http_response_t() {
+      if (!res || !status)
+        return;
+
+      res->writeStatus(status);
+
+      if (!headers.empty())
+        write_headers(res, headers);
+
+      if (data.empty())
+        res->end();
+      else
+        res->end(data);
+
+      res = nullptr;
+    }
+
+    void set_res(uws_response_t *_res = nullptr) { res = _res; }
+
+    void set_status(const char *_status) { status = _status; }
+
+    void set_data(const std::string &_data) { data = _data; }
+  };
+
+  ////////////////////////////////////////
 
   int id;
 
@@ -259,6 +304,45 @@ public:
     sapp->any("/*", any_any);
     sapp->options("/*", options_cors);
     sapp->head("/*", options_cors);
+
+    auto get_cache = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+      auto key = req->getParameter(0);
+      if (key.empty())
+        return;
+
+      std::string str_key(key);
+
+      auto cached = cache::get(str_key);
+      if (cached.empty()) {
+        cached = db::get_cache(db_conn, str_key);
+
+        if (!cached.cached()) {
+          cached.mark_cached();
+          cache::set(str_key, cached);
+        }
+      }
+
+      set_content_type_json(hres);
+
+      if (cached.expires_at == 1) {
+      }
+    };
+
+    auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+    };
+
+    sapp->get("/cache/:key", get_cache);
+    sapp->post("/cache/:key", post_cache);
   }
 
   // util methods ////////////////////////
@@ -349,6 +433,10 @@ public:
 
   static inline void set_content_type_json(uws_response_t *res) {
     res->writeHeader(header_key_t.content_type, content_type_t.json);
+  }
+
+  static inline void set_content_type_json(http_response_t &hres) {
+    hres.headers.emplace_back(header_key_t.content_type, content_type_t.json);
   }
 
   static inline void write_headers(uws_response_t *res,
