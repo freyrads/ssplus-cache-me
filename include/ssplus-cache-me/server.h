@@ -1,9 +1,10 @@
 #ifndef SERVER_H
 #define SERVER_H
 
-#include "cache.h"
-#include "db.h"
 #include "nlohmann/json.hpp"
+#include "run.h"
+#include "ssplus-cache-me/cache.h"
+#include "ssplus-cache-me/db.h"
 #include "ssplus-cache-me/debug.h"
 #include "ssplus-cache-me/log.h"
 #include "ssplus-cache-me/server_config.h"
@@ -18,8 +19,9 @@
 // maybe these should be configurable
 
 // a day
+#ifndef CORS_VALID_FOR
 #define CORS_VALID_FOR "86400"
-// #define REQUIRE_ORIGIN_HEADER
+#endif // CORS_VALID_FOR
 
 namespace ssplus_cache_me::server {
 
@@ -65,7 +67,7 @@ template <bool WITH_SSL> class server_t {
         : res(_res), status(http_status_t.OK_200) {}
 
     explicit http_response_t(uws_response_t *_res, const header_v_t &_headers)
-        : res(_res), headers(_headers), status(http_status_t.OK_200) {}
+        : res(_res), status(http_status_t.OK_200), headers(_headers) {}
 
     ~http_response_t() {
       if (!res || !status)
@@ -84,11 +86,20 @@ template <bool WITH_SSL> class server_t {
       res = nullptr;
     }
 
-    void set_res(uws_response_t *_res = nullptr) { res = _res; }
+    http_response_t &set_res(uws_response_t *_res = nullptr) {
+      res = _res;
+      return *this;
+    }
 
-    void set_status(const char *_status) { status = _status; }
+    http_response_t &set_status(const char *_status) {
+      status = _status;
+      return *this;
+    }
 
-    void set_data(const std::string &_data) { data = _data; }
+    http_response_t &set_data(const std::string &_data) {
+      data = _data;
+      return *this;
+    }
   };
 
   ////////////////////////////////////////
@@ -215,6 +226,97 @@ template <bool WITH_SSL> class server_t {
     sthread = nullptr;
   }
 
+  // setup routes
+  void register_routes() {
+    auto any_any = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      res->writeStatus(http_status_t.NOT_FOUND_404);
+      write_headers(res, cors_headers);
+      res->end();
+    };
+
+    auto options_cors = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req,
+                               {
+                                   {"Access-Control-Max-Age", CORS_VALID_FOR},
+                               });
+
+      if (cors_headers.empty())
+        return;
+
+      res->writeStatus(http_status_t.NO_CONTENT_204);
+      write_headers(res, cors_headers);
+      res->end();
+    };
+
+    sapp->any("/*", any_any);
+    sapp->options("/*", options_cors);
+    sapp->head("/*", options_cors);
+
+    auto get_cache = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+      auto key = req->getParameter(0);
+      if (key.empty()) {
+        hres.set_status(http_status_t.BAD_REQUEST_400);
+        return;
+      }
+
+      std::string str_key(key);
+
+      auto cached = cache::get(str_key);
+      if (!cached.cached()) {
+        // key is not in cache
+        // try to find it in db and cache it
+        cached = db::get_cache(db_conn, str_key);
+
+        if (cached.empty()) {
+          cached.mark_cached();
+        }
+
+        if (cached.expires_at > 1) {
+                    // TODO
+          // schedule deletion
+          // query_schedule_t del_q("del/" + str_key);
+
+          // del_q.query = "DELETE FROM \"cache\" WHERE \"key\" = ?;";
+          // del_q.run = [](sqlite3_stmt *statement,
+          //                const query_schedule_t &q) -> int { return 0; };
+
+          // enqueue_write_query(del_q);
+        }
+
+        cache::set(str_key, cached);
+      }
+
+      if (cached.expires_at == 1) {
+        // cache not found
+        hres.set_status(http_status_t.NOT_FOUND_404);
+        return;
+      }
+
+      set_content_type_json(hres);
+      hres.set_data(json_response::success(cached.to_json()).dump());
+    };
+
+    auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+    };
+
+    sapp->get("/cache/:key", get_cache);
+    sapp->post("/cache/:key", post_cache);
+  }
+
 public:
   void init(int _id = -1) noexcept {
     if (_id != -1)
@@ -275,77 +377,8 @@ public:
 
   ////////////////////////////////////////
 
-  // setup routes
-  void register_routes() {
-    auto any_any = [this](uws_response_t *res, uws_request_t *req) {
-      auto cors_headers = cors(res, req);
-      if (cors_headers.empty())
-        return;
-
-      res->writeStatus(http_status_t.NOT_FOUND_404);
-      write_headers(res, cors_headers);
-      res->end();
-    };
-
-    auto options_cors = [this](uws_response_t *res, uws_request_t *req) {
-      auto cors_headers = cors(res, req,
-                               {
-                                   {"Access-Control-Max-Age", CORS_VALID_FOR},
-                               });
-
-      if (cors_headers.empty())
-        return;
-
-      res->writeStatus(http_status_t.NO_CONTENT_204);
-      write_headers(res, cors_headers);
-      res->end();
-    };
-
-    sapp->any("/*", any_any);
-    sapp->options("/*", options_cors);
-    sapp->head("/*", options_cors);
-
-    auto get_cache = [this](uws_response_t *res, uws_request_t *req) {
-      auto cors_headers = cors(res, req);
-      if (cors_headers.empty())
-        return;
-
-      http_response_t hres(res, cors_headers);
-      auto key = req->getParameter(0);
-      if (key.empty())
-        return;
-
-      std::string str_key(key);
-
-      auto cached = cache::get(str_key);
-      if (cached.empty()) {
-        cached = db::get_cache(db_conn, str_key);
-
-        if (!cached.cached()) {
-          cached.mark_cached();
-          cache::set(str_key, cached);
-        }
-      }
-
-      set_content_type_json(hres);
-
-      if (cached.expires_at == 1) {
-      }
-    };
-
-    auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
-      auto cors_headers = cors(res, req);
-      if (cors_headers.empty())
-        return;
-
-      http_response_t hres(res, cors_headers);
-    };
-
-    sapp->get("/cache/:key", get_cache);
-    sapp->post("/cache/:key", post_cache);
-  }
-
   // util methods ////////////////////////
+
   static inline header_v_t
   get_cors_headers(std::string_view req_allow_headers) {
     std::string allow_headers = cors_default_allow_headers;
@@ -445,6 +478,25 @@ public:
       res->writeHeader(s.first, s.second);
     }
   }
+
+  ////////////////////////////////////////
+
+  // util json_response //////////////////
+
+  struct json_response {
+    static inline nlohmann::json create_payload(bool s, int c,
+                                                const nlohmann::json &d) {
+      return {{"success", s}, {"code", c}, {"data", d}};
+    }
+
+    static inline nlohmann::json success(const nlohmann::json &d) {
+      return create_payload(true, 0, d);
+    }
+
+    static inline nlohmann::json error(int c, const nlohmann::json &d) {
+      return create_payload(false, c, d);
+    }
+  };
 
   ////////////////////////////////////////
 };

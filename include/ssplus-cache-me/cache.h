@@ -11,20 +11,28 @@ namespace ssplus_cache_me::cache {
 
 struct data_t {
   std::string value;
-  // unix timestamp in ms
+
+  // unix timestamp in ms.
+  // ts of 1 is magic value to mark key is known to not exist in db
   uint64_t expires_at;
 
   data_t();
 
   bool empty() const;
   bool expired() const;
-  void clear();
+  data_t &clear();
 
-  void mark_cached();
+  data_t &mark_cached();
   bool cached() const;
 
-  std::string from_json_str();
-  nlohmann::json from_json();
+  // build struct from json string.
+  // any validation error will leave the struct unmodified
+  int from_json_str(const std::string &s) noexcept;
+
+  // build struct from json.
+  // any validation error will leave the struct unmodified.
+  // may throw nlohmann error (although highly unlikely)
+  int from_json(const nlohmann::json &d);
 
   nlohmann::json to_json() const;
   std::string to_json_str() const;

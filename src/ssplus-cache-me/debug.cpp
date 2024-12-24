@@ -13,9 +13,21 @@ void get_ts(char *o) {
   const int milli = curtime_ms.time_since_epoch().count() % 1000;
 
   char tbuf[64] = "";
-  strftime(tbuf, sizeof(tbuf), "%FT%T", std::gmtime(&curtime));
+  strftime(tbuf, sizeof(tbuf), "%FT%T",
+#ifdef FORCE_LOG_TS_UTC
+           std::gmtime
+#else
+           std::localtime
+#endif // FORCE_LOG_TS_UTC
+           (&curtime));
 
-  sprintf(o, "%s.%03dZ", tbuf, milli);
+  sprintf(o,
+          "%s.%03d"
+#ifdef FORCE_LOG_TS_UTC
+          "Z"
+#endif // FORCE_LOG_TS_UTC
+          ,
+          tbuf, milli);
 }
 
 void pdbg_ts(FILE *f) {

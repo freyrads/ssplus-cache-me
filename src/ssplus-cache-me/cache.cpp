@@ -1,6 +1,10 @@
 #include "ssplus-cache-me/cache.h"
+#include "ssplus-cache-me/debug.h"
+#include "ssplus-cache-me/log.h"
 #include <mutex>
 #include <shared_mutex>
+
+DECLARE_DEBUG_INFO_DEFAULT();
 
 namespace ssplus_cache_me::cache {
 
@@ -18,25 +22,59 @@ bool data_t::expired() const {
                  .count());
 }
 
-void data_t::clear() {
+data_t &data_t::clear() {
   value.clear();
   expires_at = 0;
+  return *this;
 }
 
-void data_t::mark_cached() {
+data_t &data_t::mark_cached() {
   if (expires_at == 0)
     expires_at = 1;
+
+  return *this;
 }
 
 bool data_t::cached() const { return expires_at != 0 || !value.empty(); }
 
-std::string data_t::from_json_str() {}
+int data_t::from_json_str(const std::string &s) noexcept {
+  try {
+    auto d = nlohmann::json::parse(s);
 
-nlohmann::json data_t::from_json() {}
+    return from_json(d);
+  } catch (std::exception &e) {
+    log::io() << DEBUG_WHERE << e.what() << "\n";
 
-nlohmann::json data_t::to_json() const {}
+    return 3;
+  }
+}
 
-std::string data_t::to_json_str() const {}
+int data_t::from_json(const nlohmann::json &d) {
+  if (!d.is_object())
+    return 1;
+
+  auto iv = d.find("value");
+  auto iex = d.find("expires_at");
+
+  auto ie = d.end();
+  if (iv == ie || iex == ie || !iv->is_string() || !iex->is_number_unsigned())
+    return 2;
+
+  value = iv->get<std::string>();
+  expires_at = iex->get<uint64_t>();
+
+  return 0;
+}
+
+nlohmann::json data_t::to_json() const {
+  return {{
+              "value",
+              value,
+          },
+          {"expires_at", expires_at == 1 ? 0 : expires_at}};
+}
+
+std::string data_t::to_json_str() const { return to_json().dump(); }
 
 ////////////////////////////////////////////////////////////////////////////////
 

@@ -2,15 +2,19 @@
 #include "nlohmann/json.hpp"
 #include "ssplus-cache-me/db.h"
 #include "ssplus-cache-me/info.h"
+#include "ssplus-cache-me/query_runner.h"
+#include "ssplus-cache-me/schedules.h"
 #include "ssplus-cache-me/server_manager.h"
 #include "ssplus-cache-me/util.h"
 #include "ssplus-cache-me/version.h"
 #include <condition_variable>
 #include <csignal>
+#include <exception>
 #include <mutex>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <thread>
+#include <unistd.h>
 
 DECLARE_DEBUG_INFO_DEFAULT();
 
@@ -18,7 +22,25 @@ namespace ssplus_cache_me {
 
 const char *exe_name = "";
 
-void print_info() {
+// query_schedule_t ////////////////////
+
+query_schedule_t &query_schedule_t::set_id(const std::string &_id) {
+  id = _id;
+  return *this;
+}
+
+query_schedule_t &query_schedule_t::set_schedule_ts(uint64_t _ts) {
+  ts = _ts;
+  return *this;
+}
+
+bool query_schedule_t::operator==(const query_schedule_t &o) const {
+  return !id.empty() && id == o.id;
+}
+
+////////////////////////////////////////
+
+static void print_info() {
   fprintf(stderr, PROGRAM_NAME " - version %d.%d.%d\n", VERSION_MAJOR,
           VERSION_MINOR, VERSION_PATCH);
 
@@ -40,8 +62,22 @@ void print_info() {
 
 static main_t main_state;
 
+static int sigint_count = 0;
+
 static void sigint_handler(int) {
   main_state.running = false;
+
+  constexpr const char rcvmsg[] = "\nRECEIVED SIGINT\n";
+  write(STDERR_FILENO, rcvmsg, sizeof(rcvmsg));
+  sigint_count++;
+
+  if (sigint_count >= 3) {
+    constexpr const char forceexitmsg[] =
+        "\nRECEIVED 3 SIGINT, FORCE TERMINATING...\n";
+    write(STDERR_FILENO, forceexitmsg, sizeof(forceexitmsg));
+    std::terminate();
+  }
+
   main_state.mcv.notify_all();
 }
 
@@ -54,8 +90,8 @@ static int run_query(const query_schedule_t &q) {
       sqlite3_prepare_v2(main_state.db, q.query.c_str(), -1, &stmt, NULL);
 
   if (status != SQLITE_OK) {
-    log::io() << "Error preparing statement (" << status << "): " << q.query
-              << "\n";
+    log::io() << "Error preparing statement (" << status << ") id(" << q.id
+              << "): " << q.query << "\n";
 
     return status;
   }
@@ -65,7 +101,7 @@ static int run_query(const query_schedule_t &q) {
     return 0;
   }
 
-  status = q.run(stmt, q);
+  status = q.run(stmt, q, main_state.db);
 
   return status;
 }
@@ -88,17 +124,19 @@ static void run_queued_queries(const bool shutdown = false) {
       main_state.write_queries.pop();
     }
 
-    if ((status = run_query(i)) != 0 && i.err_cb) {
-      i.err_cb(status, i);
+    if (schedules::is_skipped(i.id))
+      continue;
+
+    if ((status = run_query(i)) != 0) {
+      if (status != SQLITE_DONE) {
+        log::io() << "Error Scheduled Query with status: " << status
+                  << "\nq: " << i.query << "\n";
+      }
+
       status = 0;
     }
 
-    if (status != 0) {
-      log::io() << "Unhandled Scheduled Query with status: " << status
-                << "\nq: " << i.query << "\n";
-      status = 0;
-    }
-
+    schedules::mark_done(i.id);
   } while (true);
 }
 
@@ -158,6 +196,35 @@ static int init_db(const char *path) {
       os << ", main db conn closed\n";
     else
       os << " but main db conn is NOT closed\n";
+  } else {
+    // check for readonly
+    if ((status = sqlite3_db_readonly(main_state.db, "main")) != 0) {
+      switch (status) {
+      case 1:
+        // TODO: Support readonly mode?
+        log::io() << "Database `" << path << "` is READONLY. Exiting...\n";
+        db::close(&main_state.db);
+        return status;
+      case -1:
+        log::io() << "NOTICE: Unknown database name? Is it not main?\n";
+        break;
+      default:
+        log::io()
+            << "NOTICE: Unknown status returned by sqlite3_db_readonly(): "
+            << status << "\n";
+      }
+    }
+
+    // init db tables
+    query_schedule_t init_q("init_db");
+
+    init_q.query = "CREATE TABLE IF NOT EXISTS \"cache\" (\"key\" VARCHAR "
+                   "UNIQUE PRIMARY KEY NOT NULL, \"value\" VARCHAR NOT NULL, "
+                   "\"expires_at\" UNSIGNED BIG INT DEFAULT 0);";
+
+    init_q.run = query_runner::run_until_done;
+
+    enqueue_write_query(init_q);
   }
 
   return status;
@@ -234,6 +301,8 @@ main_t *get_main_state() noexcept { return &main_state; }
 
 void enqueue_write_query(const query_schedule_t &q) {
   std::lock_guard lk(main_state.mm);
+
+  schedules::enqueue(q);
 
   main_state.write_queries.emplace(std::move(q));
   main_state.mcv.notify_one();

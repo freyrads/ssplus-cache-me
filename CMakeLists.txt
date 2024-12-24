@@ -22,6 +22,8 @@ project("SSPlus Cache Me"
 
 option(DEBUG "Build ${CMAKE_PROJECT_NAME} with debug symbol" ON)
 option(EXTERNAL_JSON "Use external nlohmann/json instead of the one included in the repo" OFF)
+option(REQUIRE_ORIGIN_HEADER "Require `Origin` header to always be present in request other than GET and HEAD" OFF)
+option(FORCE_LOG_TS_UTC "Force log timestamp to UTC regardless of local timezone" OFF)
 
 # ================================================================================
 
@@ -74,6 +76,18 @@ add_executable(${MAIN_EXE}
 	src/main.cpp)
 
 target_compile_definitions(${MAIN_EXE} PRIVATE EXTERNAL_JSON=${EXTERNAL_JSON_ENABLED})
+if (REQUIRE_ORIGIN_HEADER)
+	message("-- INFO: REQUIRE_ORIGIN_HEADER defined")
+	target_compile_definitions(${MAIN_EXE} PRIVATE REQUIRE_ORIGIN_HEADER)
+endif()
+if (FORCE_LOG_TS_UTC)
+	message("-- INFO: FORCE_LOG_TS_UTC defined")
+	target_compile_definitions(${MAIN_EXE} PRIVATE FORCE_LOG_TS_UTC)
+endif()
+if (CORS_VALID_FOR)
+	message("-- INFO: CORS_VALID_FOR=${CORS_VALID_FOR}")
+	target_compile_definitions(${MAIN_EXE} PRIVATE CORS_VALID_FOR=${CORS_VALID_FOR})
+endif()
 
 file(GLOB_RECURSE USOCKETS_SOURCES
 	${CMAKE_CURRENT_SOURCE_DIR}/libs/uWebSockets/uSockets/src/*.c)
