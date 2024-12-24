@@ -86,15 +86,11 @@ static void sigint_handler(int) {
 static int run_query(const query_schedule_t &q) {
   sqlite3_stmt *stmt = nullptr;
 
-  int status =
-      sqlite3_prepare_v2(main_state.db, q.query.c_str(), -1, &stmt, NULL);
+  int status = db::prepare_statement(main_state.db, q.query.c_str(), &stmt);
 
-  if (status != SQLITE_OK) {
-    log::io() << "Error preparing statement (" << status << ") id(" << q.id
-              << "): " << q.query << "\n";
-
-    return status;
-  }
+  if (status != SQLITE_OK)
+    log::io() << "^^^ Error preparing statement for query with ID: " << q.id
+              << "\n";
 
   if (stmt == nullptr) {
     // no thought, head empty
@@ -118,7 +114,8 @@ static void run_queued_queries(const bool shutdown = false) {
         return;
 
       i = main_state.write_queries.top();
-      if (!shutdown && i.ts > util::get_current_ts())
+      if (!shutdown && !schedules::should_skip(i.id) &&
+          i.ts > util::get_current_ts())
         return;
 
       main_state.write_queries.pop();
@@ -145,18 +142,25 @@ static void write_query_routine() {
     std::unique_lock lk(main_state.mm);
 
     if (!main_state.write_queries.empty()) {
-      auto top_sch = main_state.write_queries.top().ts;
+      auto d = main_state.write_queries.top();
 
-      if (top_sch > util::get_current_ts()) {
+      auto top_sch = d.ts;
+
+      if (schedules::should_skip(d.id)) {
+        // fallthrough
+      } else if (top_sch > util::get_current_ts()) {
         main_state.mcv.wait_until(
             lk, std::chrono::system_clock::from_time_t(top_sch), [&top_sch] {
               return top_sch != main_state.write_queries.top().ts ||
+                     schedules::should_skip(
+                         main_state.write_queries.top().id) ||
                      !main_state.running;
             });
 
         // spurious wake guard
         if (main_state.write_queries.empty() ||
-            top_sch != main_state.write_queries.top().ts)
+            (!schedules::should_skip(main_state.write_queries.top().id) &&
+             top_sch != main_state.write_queries.top().ts))
           return;
       }
     } else
@@ -166,7 +170,8 @@ static void write_query_routine() {
 
     // spurious wake guard
     if (main_state.write_queries.empty() ||
-        main_state.write_queries.top().ts > util::get_current_ts())
+        (!schedules::should_skip(main_state.write_queries.top().id) &&
+         main_state.write_queries.top().ts > util::get_current_ts()))
       return;
   }
 

@@ -13,9 +13,12 @@ int init(const char *path, sqlite3 **out) noexcept;
 
 int close(sqlite3 **conn) noexcept;
 
+int prepare_statement(sqlite3 *conn, const char *query,
+                      sqlite3_stmt **stmt) noexcept;
+
 cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept;
-cache::data_t set_cache(const std::string &key) noexcept;
-cache::data_t delete_cache(const std::string &key) noexcept;
+int set_cache(const std::string &key, const cache::data_t &data) noexcept;
+int delete_cache(const std::string &key, uint64_t at = 0) noexcept;
 
 } // namespace ssplus_cache_me::db
 

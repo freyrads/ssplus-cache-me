@@ -37,6 +37,10 @@ data_t &data_t::mark_cached() {
 
 bool data_t::cached() const { return expires_at != 0 || !value.empty(); }
 
+uint64_t data_t::get_expires_at() const noexcept {
+  return expires_at == 1 ? 0 : expires_at;
+}
+
 int data_t::from_json_str(const std::string &s) noexcept {
   try {
     auto d = nlohmann::json::parse(s);
@@ -71,7 +75,7 @@ nlohmann::json data_t::to_json() const {
               "value",
               value,
           },
-          {"expires_at", expires_at == 1 ? 0 : expires_at}};
+          {"expires_at", get_expires_at()}};
 }
 
 std::string data_t::to_json_str() const { return to_json().dump(); }

@@ -25,6 +25,8 @@ struct data_t {
   data_t &mark_cached();
   bool cached() const;
 
+  uint64_t get_expires_at() const noexcept;
+
   // build struct from json string.
   // any validation error will leave the struct unmodified
   int from_json_str(const std::string &s) noexcept;

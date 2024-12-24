@@ -2,7 +2,6 @@
 #define SERVER_H
 
 #include "nlohmann/json.hpp"
-#include "ssplus-cache-me/run.h"
 #include "ssplus-cache-me/cache.h"
 #include "ssplus-cache-me/db.h"
 #include "ssplus-cache-me/debug.h"
@@ -99,6 +98,10 @@ template <bool WITH_SSL> class server_t {
     http_response_t &set_data(const std::string &_data) {
       data = _data;
       return *this;
+    }
+
+    http_response_t &set_data(const nlohmann::json &_data) {
+      return set_data(_data.dump());
     }
   };
 
@@ -280,16 +283,10 @@ template <bool WITH_SSL> class server_t {
           cached.mark_cached();
         }
 
-        if (cached.expires_at > 1) {
-                    // TODO
+        auto eat = cached.get_expires_at();
+        if (eat != 0) {
           // schedule deletion
-          // query_schedule_t del_q("del/" + str_key);
-
-          // del_q.query = "DELETE FROM \"cache\" WHERE \"key\" = ?;";
-          // del_q.run = [](sqlite3_stmt *statement,
-          //                const query_schedule_t &q) -> int { return 0; };
-
-          // enqueue_write_query(del_q);
+          db::delete_cache(str_key, eat);
         }
 
         cache::set(str_key, cached);
@@ -302,7 +299,7 @@ template <bool WITH_SSL> class server_t {
       }
 
       set_content_type_json(hres);
-      hres.set_data(json_response::success(cached.to_json()).dump());
+      hres.set_data(json_response::success(cached.to_json()));
     };
 
     auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -310,11 +307,68 @@ template <bool WITH_SSL> class server_t {
       if (cors_headers.empty())
         return;
 
+      std::shared_ptr<std::string> body = std::make_shared<std::string>();
+
+      res->onData(
+          [res, cors_headers, body](std::string_view chunk, bool is_last) {
+            body->append(chunk);
+
+            if (!is_last)
+              return;
+
+            // handle body
+            http_response_t hres(res, cors_headers);
+
+            nlohmann::json body_json = parse_json_body(*body, hres);
+            if (body_json.is_null())
+              return;
+
+            // TODO
+            log::io() << DEBUG_WHERE << body_json.dump(2) << "\n";
+          });
+
+      res->onAborted([]() {
+        // nothing to do??
+      });
+    };
+
+    auto get_post_cache = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
       http_response_t hres(res, cors_headers);
     };
 
+    auto delete_cache = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+      auto key = req->getParameter(0);
+      if (key.empty()) {
+        hres.set_status(http_status_t.BAD_REQUEST_400);
+        return;
+      }
+
+      std::string str_key(key);
+
+      // - Delete cache in mem
+      // - Delete cache in db
+      // - Mark skip any schedule with
+      //   ID key (already handled by db::delete_cache())
+      cache::del(str_key);
+      db::delete_cache(str_key);
+
+      set_content_type_json(hres);
+      hres.set_data(json_response::success({{"message", "OK"}}));
+    };
+
     sapp->get("/cache/:key", get_cache);
-    sapp->post("/cache/:key", post_cache);
+    sapp->post("/cache", post_cache);
+    sapp->post("/cache/get-or-set", get_post_cache);
+    sapp->del("/cache/:key", delete_cache);
   }
 
 public:
@@ -479,6 +533,28 @@ public:
     }
   }
 
+  static inline nlohmann::json parse_json_body(std::string &body,
+                                               http_response_t &hres) {
+    if (body.empty()) {
+      set_content_type_json(hres);
+      hres.set_status(http_status_t.BAD_REQUEST_400);
+      hres.set_data(json_response::error(69, "Empty body"));
+      return nullptr;
+    }
+
+    try {
+      return nlohmann::json::parse(body);
+    } catch (std::exception &e) {
+      log::io() << DEBUG_WHERE << e.what() << "\n";
+
+      set_content_type_json(hres);
+      hres.set_status(http_status_t.BAD_REQUEST_400);
+      hres.set_data(json_response::error(69, "Malformed body"));
+
+      return nullptr;
+    }
+  }
+
   ////////////////////////////////////////
 
   // util json_response //////////////////
@@ -493,8 +569,8 @@ public:
       return create_payload(true, 0, d);
     }
 
-    static inline nlohmann::json error(int c, const nlohmann::json &d) {
-      return create_payload(false, c, d);
+    static inline nlohmann::json error(int c, const std::string &msg) {
+      return create_payload(false, c, {{"message", msg}});
     }
   };
 
