@@ -8,11 +8,11 @@ void get_ts(char *o) {
   const auto n = std::chrono::system_clock::now();
   const auto curtime = std::chrono::system_clock::to_time_t(n);
   const auto curtime_ms =
-      std::chrono::time_point_cast<std::chrono::milliseconds>(n);
+      std::chrono::time_point_cast<std::chrono::microseconds>(n);
 
-  const int milli = curtime_ms.time_since_epoch().count() % 1000;
+  const int milli = curtime_ms.time_since_epoch().count() % 1000'000;
 
-  char tbuf[64] = "";
+  char tbuf[128] = "";
   strftime(tbuf, sizeof(tbuf), "%FT%T",
 #ifdef FORCE_LOG_TS_UTC
            std::gmtime
@@ -22,7 +22,7 @@ void get_ts(char *o) {
            (&curtime));
 
   sprintf(o,
-          "%s.%03d"
+          "%s.%06d"
 #ifdef FORCE_LOG_TS_UTC
           "Z"
 #endif // FORCE_LOG_TS_UTC

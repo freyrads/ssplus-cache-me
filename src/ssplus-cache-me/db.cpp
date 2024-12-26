@@ -174,6 +174,12 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
 
   enqueue_write_query(q);
 
+  // schedule delete if it has expires_at
+  auto eat = data.get_expires_at();
+  if (eat != 0) {
+    delete_cache(key, eat);
+  }
+
   return 0;
 }
 
@@ -187,6 +193,8 @@ int delete_cache(const std::string &key, uint64_t at) noexcept {
 
   q.run = [key](sqlite3_stmt *statement, const query_schedule_t &q,
                 sqlite3 *conn) -> int {
+    cache::del(key);
+
     int klen = static_cast<int>(key.length());
     int status =
         sqlite3_bind_text(statement, 1, key.c_str(), klen, SQLITE_STATIC);

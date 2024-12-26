@@ -1,4 +1,5 @@
 #include "ssplus-cache-me/schedules.h"
+#include "ssplus-cache-me/log.h"
 #include <mutex>
 #include <vector>
 
@@ -8,8 +9,7 @@ static std::vector<enqueued_schedule_t> queued_schedules;
 static std::mutex mm;
 
 static auto find_schedule(const std::string &id) noexcept {
-  auto i = queued_schedules.begin();
-  while (i != queued_schedules.end()) {
+  for (auto i = queued_schedules.begin(); i != queued_schedules.end(); i++) {
     if (i->q.id == id)
       return i;
   }

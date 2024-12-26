@@ -7,6 +7,7 @@
 #include "ssplus-cache-me/server_manager.h"
 #include "ssplus-cache-me/util.h"
 #include "ssplus-cache-me/version.h"
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <exception>
@@ -84,13 +85,21 @@ static void sigint_handler(int) {
 // write_query_routine /////////////////
 
 static int run_query(const query_schedule_t &q) {
+  log::io() << "Running scheduled query `" << q.id << "`:\n" << q.query << "\n";
+
   sqlite3_stmt *stmt = nullptr;
 
   int status = db::prepare_statement(main_state.db, q.query.c_str(), &stmt);
 
-  if (status != SQLITE_OK)
-    log::io() << "^^^ Error preparing statement for query with ID: " << q.id
-              << "\n";
+  if (status != SQLITE_OK) {
+    log::io() << "^^^ Error preparing statement: "
+              << sqlite3_errmsg(main_state.db) << "\n";
+
+    if (stmt) {
+      sqlite3_finalize(stmt);
+      return status;
+    }
+  }
 
   if (stmt == nullptr) {
     // no thought, head empty
@@ -126,8 +135,8 @@ static void run_queued_queries(const bool shutdown = false) {
 
     if ((status = run_query(i)) != 0) {
       if (status != SQLITE_DONE) {
-        log::io() << "Error Scheduled Query with status: " << status
-                  << "\nq: " << i.query << "\n";
+        log::io() << "Error running scheduled query with status: " << status
+                  << "\n";
       }
 
       status = 0;
@@ -309,7 +318,7 @@ void enqueue_write_query(const query_schedule_t &q) {
 
   schedules::enqueue(q);
 
-  main_state.write_queries.emplace(std::move(q));
+  main_state.write_queries.push(q);
   main_state.mcv.notify_one();
 }
 

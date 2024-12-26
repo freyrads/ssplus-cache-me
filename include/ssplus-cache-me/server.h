@@ -7,8 +7,12 @@
 #include "ssplus-cache-me/debug.h"
 #include "ssplus-cache-me/log.h"
 #include "ssplus-cache-me/server_config.h"
+#include "ssplus-cache-me/util.h"
 #include "uWebSockets/src/App.h"
+#include <cstdint>
+#include <exception>
 #include <sqlite3.h>
+#include <stdexcept>
 #include <thread>
 
 /*#define _DEV*/
@@ -103,6 +107,16 @@ template <bool WITH_SSL> class server_t {
     http_response_t &set_data(const nlohmann::json &_data) {
       return set_data(_data.dump());
     }
+  };
+
+  class http_error_t : public std::exception {
+    std::string msg;
+
+  public:
+    explicit http_error_t(const std::string &_m) : msg(_m) {}
+    explicit http_error_t(const char *_m) : msg(_m) {}
+
+    const char *what() const noexcept { return msg.c_str(); };
   };
 
   ////////////////////////////////////////
@@ -279,14 +293,18 @@ template <bool WITH_SSL> class server_t {
         // try to find it in db and cache it
         cached = db::get_cache(db_conn, str_key);
 
-        if (cached.empty()) {
-          cached.mark_cached();
-        }
-
         auto eat = cached.get_expires_at();
         if (eat != 0) {
           // schedule deletion
           db::delete_cache(str_key, eat);
+
+          // don't response with expired cache
+          if (eat <= util::get_current_ts())
+            cached.clear();
+        }
+
+        if (cached.empty()) {
+          cached.mark_cached();
         }
 
         cache::set(str_key, cached);
@@ -307,25 +325,47 @@ template <bool WITH_SSL> class server_t {
       if (cors_headers.empty())
         return;
 
-      std::shared_ptr<std::string> body = std::make_shared<std::string>();
+      auto handle_body = [res, cors_headers](const std::string &body) {
+        http_response_t hres(res, cors_headers);
 
-      res->onData(
-          [res, cors_headers, body](std::string_view chunk, bool is_last) {
-            body->append(chunk);
+        nlohmann::json body_json = parse_json_body(body, hres);
+        if (body_json.is_null())
+          return;
 
-            if (!is_last)
-              return;
+        // TODO
+        log::io() << DEBUG_WHERE << body_json.dump(2) << "\n";
 
-            // handle body
-            http_response_t hres(res, cors_headers);
+        std::pair<std::string, cache::data_t> data;
 
-            nlohmann::json body_json = parse_json_body(*body, hres);
-            if (body_json.is_null())
-              return;
+        try {
+          data = parse_to_cache_data(body_json);
+        } catch (http_error_t &e) {
+          log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
+                    << "\n";
 
-            // TODO
-            log::io() << DEBUG_WHERE << body_json.dump(2) << "\n";
-          });
+          set_content_type_json(hres);
+          hres.set_status(http_status_t.BAD_REQUEST_400);
+          hres.set_data(json_response::error(69, std::string(e.what())));
+          return;
+        } catch (std::exception &e) {
+          log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
+                    << "\n";
+
+          hres.set_status(http_status_t.INTERNAL_SERVER_ERROR_500);
+          return;
+        }
+
+        // - Sets cache in mem
+        // - Schedules query to set cache in db
+        // - Mark skip all previous query with the same key
+        cache::set(data.first, data.second);
+        db::set_cache(data.first, data.second);
+
+        set_content_type_json(hres);
+        hres.set_data(json_response::success({{"message", "OK"}}));
+      };
+
+      res_handle_body(res, std::move(handle_body));
 
       res->onAborted([]() {
         // nothing to do??
@@ -533,7 +573,7 @@ public:
     }
   }
 
-  static inline nlohmann::json parse_json_body(std::string &body,
+  static inline nlohmann::json parse_json_body(const std::string &body,
                                                http_response_t &hres) {
     if (body.empty()) {
       set_content_type_json(hres);
@@ -553,6 +593,69 @@ public:
 
       return nullptr;
     }
+  }
+
+  static inline void
+  res_handle_body(uws_response_t *res,
+                  std::function<void(const std::string &)> &&handler) {
+    res->onData([handler, body = std::make_unique<std::string>()](
+                    std::string_view chunk, bool is_last) {
+      body->append(chunk);
+
+      if (!is_last)
+        return;
+
+      handler(*body);
+    });
+  }
+
+  /**
+   * @brief Parse payload to cache data, payload format:
+   * - `key`: (string) The unique identifier for the cache entry.
+   * - `ttl`: (number) Time-to-live for the cache entry, a duration
+   *                   in millisecond eg. 600000 for 10 minutes.
+   * - `value`: (string) The data to store in the cache.
+   *
+   * `key` and `value` must not be empty.
+   * If `ttl` is empty then the cache will live forever until the end of the
+   * universe.
+   */
+  static inline std::pair<std::string, cache::data_t>
+  parse_to_cache_data(const nlohmann::json &payload, uint64_t ttl_base = 0) {
+    if (!payload.is_object())
+      throw http_error_t("Malformed data");
+
+    cache::data_t ret;
+    std::string key;
+
+    auto ik = payload.find("key");
+    if (ik == payload.end() || !ik->is_string() ||
+        (key = ik->get<std::string>()).empty()) {
+      throw http_error_t("Invalid key");
+    }
+
+    auto iv = payload.find("value");
+    if (iv == payload.end() || !iv->is_string() ||
+        (ret.value = iv->get<std::string>()).empty()) {
+      throw http_error_t("Invalid value");
+    }
+
+    auto it = payload.find("ttl");
+    if (it != payload.end()) {
+      if (!it->is_number_unsigned())
+        throw http_error_t("Invalid ttl");
+
+      uint64_t ttl = it->get<uint64_t>();
+
+      if (ttl > 0) {
+        if (ttl_base == 0)
+          ttl_base = util::get_current_ts();
+
+        ret.expires_at = ttl_base + ttl;
+      }
+    }
+
+    return {key, ret};
   }
 
   ////////////////////////////////////////

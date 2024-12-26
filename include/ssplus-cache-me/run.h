@@ -33,7 +33,7 @@ struct query_schedule_t {
 
 inline auto query_schedule_cmp_t = [](const query_schedule_t &a,
                                       const query_schedule_t &b) {
-  return a.ts < b.ts;
+  return a.ts > b.ts;
 };
 
 using write_query_queue_t =
