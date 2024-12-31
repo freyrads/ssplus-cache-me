@@ -3,7 +3,6 @@
 #include "ssplus-cache-me/db.h"
 #include "ssplus-cache-me/info.h"
 #include "ssplus-cache-me/query_runner.h"
-#include "ssplus-cache-me/schedules.h"
 #include "ssplus-cache-me/server_manager.h"
 #include "ssplus-cache-me/util.h"
 #include "ssplus-cache-me/version.h"
@@ -85,7 +84,10 @@ static void sigint_handler(int) {
 // write_query_routine /////////////////
 
 static int run_query(const query_schedule_t &q) {
-  log::io() << "Running scheduled query `" << q.id << "`:\n" << q.query << "\n";
+  log::io() << "[" << util::get_current_ts()
+            << "] Running scheduled query on ts(" << q.ts << ") `" << q.id
+            << "`:\n"
+            << q.query << "\n";
 
   sqlite3_stmt *stmt = nullptr;
 
@@ -123,15 +125,18 @@ static void run_queued_queries(const bool shutdown = false) {
         return;
 
       i = main_state.write_queries.top();
-      if (!shutdown && !schedules::should_skip(i.id) &&
-          i.ts > util::get_current_ts())
+
+      bool not_on_schedule = i.ts > util::get_current_ts();
+      // should check all runnable query on shutdown
+      bool dont_run_now = !shutdown && not_on_schedule;
+      if (dont_run_now)
         return;
 
       main_state.write_queries.pop();
-    }
 
-    if (schedules::is_skipped(i.id))
-      continue;
+      if (shutdown && i.must_on_schedule && not_on_schedule)
+        return;
+    }
 
     if ((status = run_query(i)) != 0) {
       if (status != SQLITE_DONE) {
@@ -141,8 +146,6 @@ static void run_queued_queries(const bool shutdown = false) {
 
       status = 0;
     }
-
-    schedules::mark_done(i.id);
   } while (true);
 }
 
@@ -154,22 +157,24 @@ static void write_query_routine() {
       auto d = main_state.write_queries.top();
 
       auto top_sch = d.ts;
+      auto cur = util::get_current_ts();
 
-      if (schedules::should_skip(d.id)) {
-        // fallthrough
-      } else if (top_sch > util::get_current_ts()) {
+      // log::io() << "cur(" << cur << ") top_sch(" << top_sch << ")\n";
+
+      if (top_sch > cur) {
         main_state.mcv.wait_until(
-            lk, std::chrono::system_clock::from_time_t(top_sch), [&top_sch] {
-              return top_sch != main_state.write_queries.top().ts ||
-                     schedules::should_skip(
-                         main_state.write_queries.top().id) ||
+            lk,
+            std::chrono::system_clock::time_point{
+                std::chrono::milliseconds(top_sch)},
+            [&top_sch] {
+              return top_sch <= util::get_current_ts() ||
+                     top_sch != main_state.write_queries.top().ts ||
                      !main_state.running;
             });
 
         // spurious wake guard
         if (main_state.write_queries.empty() ||
-            (!schedules::should_skip(main_state.write_queries.top().id) &&
-             top_sch != main_state.write_queries.top().ts))
+            top_sch != main_state.write_queries.top().ts)
           return;
       }
     } else
@@ -179,8 +184,7 @@ static void write_query_routine() {
 
     // spurious wake guard
     if (main_state.write_queries.empty() ||
-        (!schedules::should_skip(main_state.write_queries.top().id) &&
-         main_state.write_queries.top().ts > util::get_current_ts()))
+        main_state.write_queries.top().ts > util::get_current_ts())
       return;
   }
 
@@ -316,9 +320,13 @@ main_t *get_main_state() noexcept { return &main_state; }
 void enqueue_write_query(const query_schedule_t &q) {
   std::lock_guard lk(main_state.mm);
 
-  schedules::enqueue(q);
+  // remove all schedule with the same id
+  auto i = std::find(main_state.write_queries.begin(),
+                     main_state.write_queries.end(), q);
+  if (i != main_state.write_queries.end())
+    main_state.write_queries.erase(i);
 
-  main_state.write_queries.push(q);
+  main_state.write_queries.push_back(q);
   main_state.mcv.notify_one();
 }
 

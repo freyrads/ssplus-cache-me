@@ -10,4 +10,6 @@ uint64_t get_current_ts() {
       .count();
 }
 
+uint64_t ms_to_ns(uint64_t ms) noexcept { return ms * 1000'000; }
+
 } // namespace ssplus_cache_me::util

@@ -3,12 +3,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <functional>
-#include <queue>
+#include <limits>
 #include <shared_mutex>
 #include <sqlite3.h>
+#include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace ssplus_cache_me {
 
@@ -17,28 +18,71 @@ struct query_schedule_t {
 
   uint64_t ts;
   std::string query;
+  // skip running this query on shutdown if not on schedule
+  bool must_on_schedule;
 
   // stepping and finalizing is entirely user controlled
   std::function<int(sqlite3_stmt *, const query_schedule_t &, sqlite3 *)> run;
 
-  query_schedule_t() : ts(0) {}
-  query_schedule_t(const std::string &_id) : id(_id), ts(0) {}
+  query_schedule_t() { init(); }
+
+  query_schedule_t(const std::string &_id) : id(_id) { init(); }
 
   query_schedule_t &set_id(const std::string &_id);
 
   query_schedule_t &set_schedule_ts(uint64_t _ts);
 
   bool operator==(const query_schedule_t &o) const;
+
+private:
+  void init() noexcept {
+    ts = 0;
+    must_on_schedule = false;
+  }
 };
 
-inline auto query_schedule_cmp_t = [](const query_schedule_t &a,
-                                      const query_schedule_t &b) {
-  return a.ts > b.ts;
-};
+class write_query_queue_t : public std::deque<query_schedule_t> {
+  auto get_top_iter() {
+    ssize_t idx = -1;
 
-using write_query_queue_t =
-    std::priority_queue<query_schedule_t, std::vector<query_schedule_t>,
-                        decltype(query_schedule_cmp_t)>;
+    if (empty())
+      return end();
+
+    uint64_t min_ts = std::numeric_limits<uint64_t>::max();
+    auto beg = begin();
+
+    for (size_t i = 0; i < size(); i++) {
+      auto t = (beg + i)->ts;
+      if (t < min_ts) {
+        idx = i;
+        min_ts = t;
+      }
+    }
+
+    // return first index if all ts is 0
+    if (idx == -1)
+      idx = 0;
+
+    return beg + idx;
+  }
+
+public:
+  value_type &top() {
+    auto i = get_top_iter();
+    if (i == end())
+      throw std::logic_error("Empty queue");
+
+    return *i;
+  }
+
+  void pop() {
+    auto i = get_top_iter();
+    if (i == end())
+      return;
+
+    erase(i);
+  }
+};
 
 struct main_t {
   std::atomic<bool> running;
@@ -54,7 +98,7 @@ struct main_t {
   // should lock mm to modify this
   write_query_queue_t write_queries;
 
-  main_t() : db(nullptr), write_queries(query_schedule_cmp_t) {}
+  main_t() : db(nullptr) {}
 };
 
 int run(const int argc, const char *argv[]);

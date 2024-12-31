@@ -13,13 +13,13 @@ struct enqueued_schedule_t {
   enqueued_schedule_t() : skip(false) {}
 };
 
-bool should_skip(const std::string &id) noexcept;
+bool should_skip(const query_schedule_t &sched) noexcept;
 
-void mark_for_skip(const std::string &id) noexcept;
+void mark_for_skip(const query_schedule_t &sched) noexcept;
 
-void mark_done(const std::string &id) noexcept;
+void mark_done(const query_schedule_t &sched) noexcept;
 
-bool is_skipped(const std::string &id) noexcept;
+bool is_skipped(const query_schedule_t &sched) noexcept;
 
 void enqueue(const query_schedule_t &q);
 

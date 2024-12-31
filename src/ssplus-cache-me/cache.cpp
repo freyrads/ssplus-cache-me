@@ -78,18 +78,20 @@ nlohmann::json data_t::to_json() const {
           {"expires_at", get_expires_at()}};
 }
 
-std::string data_t::to_json_str() const { return to_json().dump(); }
+std::string data_t::to_json_str(int indent) const {
+  return to_json().dump(indent);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
 static cache_map_t mcache;
 static std::shared_mutex mcache_m;
 
-std::lock_guard<std::shared_mutex> acquire_lock() {
+[[nodiscard]] std::lock_guard<std::shared_mutex> acquire_lock() {
   return std::lock_guard(mcache_m);
 }
 
-std::shared_lock<std::shared_mutex> acquire_shared_lock() {
+[[nodiscard]] std::shared_lock<std::shared_mutex> acquire_shared_lock() {
   return std::shared_lock(mcache_m);
 }
 

@@ -64,6 +64,14 @@ template <bool WITH_SSL> class server_t {
     header_v_t headers;
     std::string data;
 
+    http_response_t &reset() {
+      res = nullptr;
+      status = http_status_t.OK_200;
+
+      headers.clear();
+      data.clear();
+    }
+
     http_response_t() : res(nullptr), status(http_status_t.OK_200) {}
 
     explicit http_response_t(uws_response_t *_res)
@@ -269,55 +277,14 @@ template <bool WITH_SSL> class server_t {
       res->end();
     };
 
-    sapp->any("/*", any_any);
-    sapp->options("/*", options_cors);
-    sapp->head("/*", options_cors);
-
     auto get_cache = [this](uws_response_t *res, uws_request_t *req) {
       auto cors_headers = cors(res, req);
       if (cors_headers.empty())
         return;
 
       http_response_t hres(res, cors_headers);
-      auto key = req->getParameter(0);
-      if (key.empty()) {
-        hres.set_status(http_status_t.BAD_REQUEST_400);
-        return;
-      }
 
-      std::string str_key(key);
-
-      auto cached = cache::get(str_key);
-      if (!cached.cached()) {
-        // key is not in cache
-        // try to find it in db and cache it
-        cached = db::get_cache(db_conn, str_key);
-
-        auto eat = cached.get_expires_at();
-        if (eat != 0) {
-          // schedule deletion
-          db::delete_cache(str_key, eat);
-
-          // don't response with expired cache
-          if (eat <= util::get_current_ts())
-            cached.clear();
-        }
-
-        if (cached.empty()) {
-          cached.mark_cached();
-        }
-
-        cache::set(str_key, cached);
-      }
-
-      if (cached.expires_at == 1) {
-        // cache not found
-        hres.set_status(http_status_t.NOT_FOUND_404);
-        return;
-      }
-
-      set_content_type_json(hres);
-      hres.set_data(json_response::success(cached.to_json()));
+      http_handlers::get_cache(hres, req, db_conn);
     };
 
     auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -325,51 +292,7 @@ template <bool WITH_SSL> class server_t {
       if (cors_headers.empty())
         return;
 
-      auto handle_body = [res, cors_headers](const std::string &body) {
-        http_response_t hres(res, cors_headers);
-
-        nlohmann::json body_json = parse_json_body(body, hres);
-        if (body_json.is_null())
-          return;
-
-        // TODO
-        log::io() << DEBUG_WHERE << body_json.dump(2) << "\n";
-
-        std::pair<std::string, cache::data_t> data;
-
-        try {
-          data = parse_to_cache_data(body_json);
-        } catch (http_error_t &e) {
-          log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
-                    << "\n";
-
-          set_content_type_json(hres);
-          hres.set_status(http_status_t.BAD_REQUEST_400);
-          hres.set_data(json_response::error(69, std::string(e.what())));
-          return;
-        } catch (std::exception &e) {
-          log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
-                    << "\n";
-
-          hres.set_status(http_status_t.INTERNAL_SERVER_ERROR_500);
-          return;
-        }
-
-        // - Sets cache in mem
-        // - Schedules query to set cache in db
-        // - Mark skip all previous query with the same key
-        cache::set(data.first, data.second);
-        db::set_cache(data.first, data.second);
-
-        set_content_type_json(hres);
-        hres.set_data(json_response::success({{"message", "OK"}}));
-      };
-
-      res_handle_body(res, std::move(handle_body));
-
-      res->onAborted([]() {
-        // nothing to do??
-      });
+      http_handlers::post_cache(res, cors_headers);
     };
 
     auto get_post_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -378,6 +301,11 @@ template <bool WITH_SSL> class server_t {
         return;
 
       http_response_t hres(res, cors_headers);
+      if (http_handlers::get_cache(hres, req, db_conn) == 0)
+        return;
+
+      hres.reset();
+      http_handlers::post_cache(res, cors_headers);
     };
 
     auto delete_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -405,6 +333,40 @@ template <bool WITH_SSL> class server_t {
       hres.set_data(json_response::success({{"message", "OK"}}));
     };
 
+    // stat endpoints
+    auto get_checkhealth = [this](uws_response_t *res, uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+      // TODO
+    };
+
+    // log triggers
+    auto get_trigger_log_cache = [this](uws_response_t *res,
+                                        uws_request_t *req) {
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+      // TODO
+    };
+
+    // REGISTER ROUTES /////////////////////
+    // 404, cors middleware
+    sapp->any("/*", any_any);
+    sapp->options("/*", options_cors);
+    sapp->head("/*", options_cors);
+
+    // stat endpoints
+    sapp->get("/checkhealth", get_checkhealth);
+
+    // log triggers
+    sapp->get("/trigger_log/cache", get_trigger_log_cache);
+
+    // app endpoints
     sapp->get("/cache/:key", get_cache);
     sapp->post("/cache", post_cache);
     sapp->post("/cache/get-or-set", get_post_cache);
@@ -678,6 +640,104 @@ public:
   };
 
   ////////////////////////////////////////
+
+  struct http_handlers {
+    static inline int get_cache(http_response_t &hres, uws_request_t *req,
+                                sqlite3 *db_conn) {
+      auto key = req->getParameter(0);
+      if (key.empty()) {
+        hres.set_status(http_status_t.BAD_REQUEST_400);
+        return 1;
+      }
+
+      std::string str_key(key);
+
+      auto cached = cache::get(str_key);
+      if (!cached.cached()) {
+        // key is not in cache
+        // try to find it in db and cache it
+        cached = db::get_cache(db_conn, str_key);
+
+        auto eat = cached.get_expires_at();
+        if (eat != 0) {
+          // schedule deletion
+          db::delete_cache(str_key, eat);
+
+          // don't response with expired cache
+          if (eat <= util::get_current_ts())
+            cached.clear();
+        }
+
+        if (cached.empty()) {
+          cached.mark_cached();
+        }
+
+        cache::set(str_key, cached);
+      }
+
+      if (cached.expires_at == 1) {
+        // cache not found
+        hres.set_status(http_status_t.NOT_FOUND_404);
+        return 2;
+      }
+
+      set_content_type_json(hres);
+      hres.set_data(json_response::success(cached.to_json()));
+      return 0;
+    }
+
+    static inline int post_cache(uws_response_t *res,
+                                 header_v_t &cors_headers) {
+      auto handle_body = [res, cors_headers](const std::string &body) {
+        http_response_t hres(res, cors_headers);
+
+        nlohmann::json body_json = parse_json_body(body, hres);
+        if (body_json.is_null())
+          return;
+
+        std::pair<std::string, cache::data_t> data;
+
+        try {
+          data = parse_to_cache_data(body_json);
+
+          log::io() << DEBUG_WHERE << "data.first(" << data.first
+                    << ") data.second(" << data.second.to_json_str(2) << ")\n";
+
+        } catch (http_error_t &e) {
+          log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
+                    << "\n";
+
+          set_content_type_json(hres);
+          hres.set_status(http_status_t.BAD_REQUEST_400);
+          hres.set_data(json_response::error(69, std::string(e.what())));
+          return;
+        } catch (std::exception &e) {
+          log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
+                    << "\n";
+
+          hres.set_status(http_status_t.INTERNAL_SERVER_ERROR_500);
+          return;
+        }
+
+        // - Sets cache in mem
+        // - Schedules query to set cache in db
+        // - Mark skip all previous query with the same key
+        cache::set(data.first, data.second);
+        db::set_cache(data.first, data.second);
+
+        set_content_type_json(hres);
+        hres.set_data(json_response::success({{"message", "OK"}}));
+      };
+
+      res_handle_body(res, std::move(handle_body));
+
+      res->onAborted([]() {
+        // nothing to do??
+      });
+
+      return 0;
+    }
+  };
 };
 
 ////////////////////////////////////////

@@ -120,7 +120,7 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
   if (key.empty() || data.empty())
     return 1;
 
-  query_schedule_t q(key);
+  query_schedule_t q("set/" + key);
 
   q.query = "INSERT INTO \"cache\" "
             "(\"key\", \"value\", \"expires_at\") "
@@ -187,7 +187,7 @@ int delete_cache(const std::string &key, uint64_t at) noexcept {
   if (key.empty())
     return 1;
 
-  query_schedule_t q(key);
+  query_schedule_t q("del/" + key);
 
   q.query = "DELETE FROM \"cache\" WHERE \"key\" = ?1 ;";
 
@@ -210,6 +210,8 @@ int delete_cache(const std::string &key, uint64_t at) noexcept {
   };
 
   q.ts = at;
+  // do not run delete query on shutdown
+  q.must_on_schedule = true;
 
   enqueue_write_query(q);
 

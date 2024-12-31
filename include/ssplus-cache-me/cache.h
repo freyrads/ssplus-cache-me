@@ -37,7 +37,7 @@ struct data_t {
   int from_json(const nlohmann::json &d);
 
   nlohmann::json to_json() const;
-  std::string to_json_str() const;
+  std::string to_json_str(int indent = -1) const;
 };
 
 using cache_map_t = std::unordered_map<std::string, data_t>;
