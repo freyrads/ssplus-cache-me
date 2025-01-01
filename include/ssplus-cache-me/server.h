@@ -54,6 +54,8 @@ using header_v_t = std::vector<std::pair<std::string, std::string>>;
 template <bool WITH_SSL> class server_t {
   using uws_response_t = uWS::HttpResponse<WITH_SSL>;
   using uws_request_t = uWS::HttpRequest;
+  // pair of key with data
+  using cache_data_t = std::pair<std::string, cache::data_t>;
 
   // http_response_t /////////////////////
 
@@ -64,21 +66,26 @@ template <bool WITH_SSL> class server_t {
     header_v_t headers;
     std::string data;
 
-    http_response_t &reset() {
-      res = nullptr;
+    http_response_t &reset(uws_response_t *_res = nullptr) {
+      if (_res)
+        res = _res;
+      else
+        res = nullptr;
       status = http_status_t.OK_200;
 
       headers.clear();
       data.clear();
+      return *this;
     }
 
-    http_response_t() : res(nullptr), status(http_status_t.OK_200) {}
+    http_response_t() : res(nullptr) { init(); }
 
-    explicit http_response_t(uws_response_t *_res)
-        : res(_res), status(http_status_t.OK_200) {}
+    explicit http_response_t(uws_response_t *_res) : res(_res) { init(); }
 
     explicit http_response_t(uws_response_t *_res, const header_v_t &_headers)
-        : res(_res), status(http_status_t.OK_200), headers(_headers) {}
+        : res(_res), headers(_headers) {
+      init();
+    }
 
     ~http_response_t() {
       if (!res || !status)
@@ -115,6 +122,9 @@ template <bool WITH_SSL> class server_t {
     http_response_t &set_data(const nlohmann::json &_data) {
       return set_data(_data.dump());
     }
+
+  private:
+    void init() noexcept { status = http_status_t.OK_200; }
   };
 
   class http_error_t : public std::exception {
@@ -126,6 +136,9 @@ template <bool WITH_SSL> class server_t {
 
     const char *what() const noexcept { return msg.c_str(); };
   };
+
+  using post_cache_custom_handler_fn =
+      std::function<bool(http_response_t &, cache_data_t &)>;
 
   ////////////////////////////////////////
 
@@ -284,7 +297,15 @@ template <bool WITH_SSL> class server_t {
 
       http_response_t hres(res, cors_headers);
 
-      http_handlers::get_cache(hres, req, db_conn);
+      auto key = req->getParameter(0);
+      if (key.empty()) {
+        hres.set_status(http_status_t.BAD_REQUEST_400);
+        return;
+      }
+
+      std::string str_key(key);
+
+      http_handlers::get_cache(hres, str_key, db_conn);
     };
 
     auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -300,12 +321,15 @@ template <bool WITH_SSL> class server_t {
       if (cors_headers.empty())
         return;
 
-      http_response_t hres(res, cors_headers);
-      if (http_handlers::get_cache(hres, req, db_conn) == 0)
-        return;
+      http_handlers::post_cache(
+          res, cors_headers,
+          [this](http_response_t &hres, cache_data_t &data) -> bool {
+            if (http_handlers::get_cache(hres, data.first, db_conn) == 0)
+              return true;
 
-      hres.reset();
-      http_handlers::post_cache(res, cors_headers);
+            hres.reset(hres.res);
+            return false;
+          });
     };
 
     auto delete_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -642,16 +666,8 @@ public:
   ////////////////////////////////////////
 
   struct http_handlers {
-    static inline int get_cache(http_response_t &hres, uws_request_t *req,
-                                sqlite3 *db_conn) {
-      auto key = req->getParameter(0);
-      if (key.empty()) {
-        hres.set_status(http_status_t.BAD_REQUEST_400);
-        return 1;
-      }
-
-      std::string str_key(key);
-
+    static inline int get_cache(http_response_t &hres,
+                                const std::string &str_key, sqlite3 *db_conn) {
       auto cached = cache::get(str_key);
       if (!cached.cached()) {
         // key is not in cache
@@ -686,22 +702,25 @@ public:
       return 0;
     }
 
-    static inline int post_cache(uws_response_t *res,
-                                 header_v_t &cors_headers) {
-      auto handle_body = [res, cors_headers](const std::string &body) {
+    static inline int
+    post_cache(uws_response_t *res, header_v_t &cors_headers,
+               post_cache_custom_handler_fn custom_handler = nullptr) {
+      auto handle_body = [res, cors_headers,
+                          custom_handler](const std::string &body) {
         http_response_t hres(res, cors_headers);
 
         nlohmann::json body_json = parse_json_body(body, hres);
         if (body_json.is_null())
           return;
 
-        std::pair<std::string, cache::data_t> data;
+        cache_data_t data;
 
         try {
           data = parse_to_cache_data(body_json);
 
-          log::io() << DEBUG_WHERE << "data.first(" << data.first
-                    << ") data.second(" << data.second.to_json_str(2) << ")\n";
+          // log::io() << DEBUG_WHERE << "data.first(" << data.first
+          //           << ") data.second(" << data.second.to_json_str(2) <<
+          //           ")\n";
 
         } catch (http_error_t &e) {
           log::io() << DEBUG_WHERE << "parse_to_cache_data(): " << e.what()
@@ -719,6 +738,9 @@ public:
           return;
         }
 
+        if (custom_handler && custom_handler(hres, data))
+          return;
+
         // - Sets cache in mem
         // - Schedules query to set cache in db
         // - Mark skip all previous query with the same key
@@ -726,7 +748,7 @@ public:
         db::set_cache(data.first, data.second);
 
         set_content_type_json(hres);
-        hres.set_data(json_response::success({{"message", "OK"}}));
+        hres.set_data(json_response::success(data.second.to_json()));
       };
 
       res_handle_body(res, std::move(handle_body));

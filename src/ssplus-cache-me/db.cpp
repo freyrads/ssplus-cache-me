@@ -83,10 +83,10 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
   sqlite3_stmt *statement = nullptr;
   int status = prepare_statement(conn, query.c_str(), &statement);
 
-  if (status != SQLITE_OK)
-    return ret;
-
   int klen = static_cast<int>(key.length());
+  if (status != SQLITE_OK)
+    goto ret;
+
   status = sqlite3_bind_text(statement, 1, key.c_str(), klen, SQLITE_STATIC);
 
   if (status != SQLITE_OK) {

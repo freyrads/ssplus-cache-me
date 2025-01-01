@@ -14,6 +14,9 @@
 namespace ssplus_cache_me {
 
 struct query_schedule_t {
+  using run_fn =
+      std::function<int(sqlite3_stmt *, const query_schedule_t &, sqlite3 *)>;
+
   std::string id;
 
   uint64_t ts;
@@ -22,7 +25,7 @@ struct query_schedule_t {
   bool must_on_schedule;
 
   // stepping and finalizing is entirely user controlled
-  std::function<int(sqlite3_stmt *, const query_schedule_t &, sqlite3 *)> run;
+  run_fn run;
 
   query_schedule_t() { init(); }
 
