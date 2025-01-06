@@ -296,15 +296,18 @@ int run(const int argc, const char *argv[]) {
     return 1;
   }
 
+  main_state.running = true;
+  main_state.concurrency = std::thread::hardware_concurrency();
+
   server_manager_t<false> smanager;
   server_manager_t<true> ssl_smanager;
 
-  if (sconf.with_ssl())
-    ssl_smanager.run(std::thread::hardware_concurrency(), sconf);
-  else
-    smanager.run(std::thread::hardware_concurrency(), sconf);
+  if (sconf.with_ssl()) {
+    log::io() << "NOTICE: SSL Enabled server\n";
+    ssl_smanager.run(main_state.concurrency, sconf);
+  } else
+    smanager.run(main_state.concurrency, sconf);
 
-  main_state.running = true;
   main_loop();
 
   smanager.shutdown();

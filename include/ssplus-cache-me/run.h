@@ -101,7 +101,10 @@ struct main_t {
   // should lock mm to modify this
   write_query_queue_t write_queries;
 
-  main_t() : db(nullptr) {}
+  // program configs
+  int concurrency;
+
+  main_t() : db(nullptr), concurrency(0) {}
 };
 
 int run(const int argc, const char *argv[]);
