@@ -226,6 +226,17 @@ template <bool WITH_SSL> class server_t {
   }
 
   void init_server() {
+    /* TODO: support ssl options?
+    uWS::SocketContextOptions opts;
+
+    const char *key_file_name = nullptr;
+    const char *cert_file_name = nullptr;
+    const char *passphrase = nullptr;
+    const char *dh_params_file_name = nullptr;
+    const char *ca_file_name = nullptr;
+    const char *ssl_ciphers = nullptr;
+    */
+
     sapp = new uWS::TemplatedApp<WITH_SSL>{};
 
     register_routes();
@@ -235,9 +246,13 @@ template <bool WITH_SSL> class server_t {
         slisten_socket = listen_socket;
         log::io() << get_id_for_log() << "Listening on port " << conf.port
                   << "\n";
-      } else
+      } else {
         log::io() << DEBUG_WHERE << get_id_for_log()
-                  << "Listening socket is null\n";
+                  << "Listening socket is null, failed to load certs or to "
+                     "bind to port\n";
+
+        throw std::runtime_error(get_id_for_log() + "Unable to start server");
+      }
     });
 
     sloop = uWS::Loop::get();

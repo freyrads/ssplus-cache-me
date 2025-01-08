@@ -1,5 +1,6 @@
 #include "ssplus-cache-me/run.h"
 #include "nlohmann/json.hpp"
+#include "ssplus-cache-me/config.h"
 #include "ssplus-cache-me/db.h"
 #include "ssplus-cache-me/info.h"
 #include "ssplus-cache-me/query_runner.h"
@@ -202,6 +203,7 @@ static void main_loop() {
 static int init_db(const char *path) {
   db::setup();
 
+  log::io() << "NOTICE: Using database `" << path << "`\n";
   log::io() << "Initializing main db conn\n";
 
   // open main conn
@@ -243,6 +245,30 @@ static int init_db(const char *path) {
     init_q.run = query_runner::run_until_done;
 
     enqueue_write_query(init_q);
+
+    // delete expired caches
+    query_schedule_t delex_q("delete_expires");
+
+    delex_q.query = "DELETE FROM \"cache\" WHERE "
+                    "\"expires_at\" <= ?1 ;";
+
+    delex_q.run = [](sqlite3_stmt *statement, const query_schedule_t &q,
+                     sqlite3 *conn) {
+      auto cts = util::get_current_ts();
+      int status = sqlite3_bind_int64(statement, 1, static_cast<int64_t>(cts));
+
+      if (status != SQLITE_OK) {
+        log::io() << DEBUG_WHERE << "Failed binding expires_at(" << cts
+                  << ")\n";
+
+        sqlite3_finalize(statement);
+        return status;
+      }
+
+      return query_runner::run_until_done(statement, q, conn);
+    };
+
+    enqueue_write_query(delex_q);
   }
 
   return status;
@@ -276,7 +302,7 @@ static int shutdown_db() {
   return status;
 }
 
-int run(const int argc, const char *argv[]) {
+int run(int argc, char *argv[]) {
   if (argc > 0)
     exe_name = argv[0];
 
@@ -284,20 +310,32 @@ int run(const int argc, const char *argv[]) {
 
   signal(SIGINT, sigint_handler);
 
+  main_state.set_concurrency(std::thread::hardware_concurrency());
   server::server_config_t sconf{};
 
+  // default name
   sconf.db_path = "cache.sqlite3";
 
-  // TODO: parse args here
+  config::load_env(main_state, sconf);
+  // stray newline, for sanity check
+  fprintf(stderr, "\n");
+  {
+    int status = 0;
+    if ((status = config::parse_args(main_state, sconf, argc, argv)) != 0) {
+      if (status == 1)
+        return 0;
+      return status;
+    }
 
-  // TODO: make db filename configurable
+    fprintf(stderr, "\n");
+  }
+
   if (init_db(sconf.db_path.c_str()) != 0) {
     log::io() << "Failed initializing database\n";
     return 1;
   }
 
   main_state.running = true;
-  main_state.concurrency = std::thread::hardware_concurrency();
 
   server_manager_t<false> smanager;
   server_manager_t<true> ssl_smanager;
@@ -332,5 +370,7 @@ void enqueue_write_query(const query_schedule_t &q) {
   main_state.write_queries.push_back(q);
   main_state.mcv.notify_one();
 }
+
+const char *get_exe_name() noexcept { return exe_name; }
 
 } // namespace ssplus_cache_me

@@ -1,6 +1,7 @@
 #ifndef RUN_H
 #define RUN_H
 
+#include "ssplus-cache-me/log.h"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -10,6 +11,7 @@
 #include <sqlite3.h>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace ssplus_cache_me {
 
@@ -105,13 +107,26 @@ struct main_t {
   int concurrency;
 
   main_t() : db(nullptr), concurrency(0) {}
+
+  void set_concurrency(int _concurrency) noexcept {
+    static auto hwcon = std::thread::hardware_concurrency();
+    if (static_cast<unsigned int>(_concurrency) > hwcon) {
+      log::io() << "NOTICE: Setting server concurrency to a higher value than "
+                   "hardware concurrency ("
+                << hwcon << "): " << _concurrency << "\n";
+    }
+
+    concurrency = _concurrency;
+  }
 };
 
-int run(const int argc, const char *argv[]);
+int run(int argc, char *argv[]);
 
 main_t *get_main_state() noexcept;
 
 void enqueue_write_query(const query_schedule_t &q);
+
+const char *get_exe_name() noexcept;
 
 } // namespace ssplus_cache_me
 
