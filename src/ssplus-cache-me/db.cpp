@@ -4,6 +4,7 @@
 #include "ssplus-cache-me/query_runner.h"
 #include "ssplus-cache-me/run.h"
 #include <sqlite3.h>
+#include <unordered_map>
 
 DECLARE_DEBUG_INFO_DEFAULT();
 
@@ -53,10 +54,33 @@ int close(sqlite3 **conn) noexcept {
   return status;
 }
 
+static std::unordered_map<std::string, sqlite3_stmt *> stmt_cache;
+static std::shared_mutex stmt_cache_m;
+
+// any create failure won't
 int prepare_statement(sqlite3 *conn, const char *query,
                       sqlite3_stmt **stmt) noexcept {
+  int status = 0;
 
-  int status = sqlite3_prepare_v2(conn, query, -1, stmt, NULL);
+  {
+    // find it in cache first
+    std::shared_lock lk(stmt_cache_m);
+
+    auto i = stmt_cache.find(query);
+    if (i != stmt_cache.end()) {
+      // found, return early
+      *stmt = i->second;
+
+      // make sure this statement is ready
+      sqlite3_reset(*stmt);
+      sqlite3_clear_bindings(*stmt);
+
+      return status;
+    }
+  }
+
+  // else create a new
+  status = sqlite3_prepare_v2(conn, query, -1, stmt, NULL);
 
   if (status != SQLITE_OK) {
     log::io() << DEBUG_WHERE << "Error preparing statement with status("
@@ -67,9 +91,40 @@ int prepare_statement(sqlite3 *conn, const char *query,
       sqlite3_finalize(*stmt);
       *stmt = nullptr;
     }
+  } else {
+    // save this statement in cache
+    std::lock_guard lk(stmt_cache_m);
+    stmt_cache.insert_or_assign(std::string{query}, *stmt);
   }
 
   return status;
+}
+
+static int finalize_statement_unlocked(const std::string &query,
+                                       sqlite3_stmt **stmt) noexcept {
+  int status = 0;
+
+  if (*stmt) {
+    sqlite3_finalize(*stmt);
+    *stmt = nullptr;
+  }
+
+  if (!query.empty()) {
+    auto i = stmt_cache.find(query);
+    if (i == stmt_cache.end()) {
+      return status;
+    }
+
+    stmt_cache.erase(i);
+    stmt_cache.rehash(0);
+  }
+
+  return status;
+}
+
+int finalize_statement(const std::string &query, sqlite3_stmt **stmt) noexcept {
+  std::lock_guard lk(stmt_cache_m);
+  return finalize_statement_unlocked(query, stmt);
 }
 
 cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
@@ -108,10 +163,7 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
   }
 
 ret:
-  if (statement) {
-    sqlite3_finalize(statement);
-    statement = nullptr;
-  }
+  finalize_statement(query, &statement);
 
   return ret;
 }
@@ -135,12 +187,12 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
 
   q.run = [key, data](sqlite3_stmt *statement, const query_schedule_t &q,
                       sqlite3 *conn) -> int {
-    auto log_bind_fail = [statement](const std::string &name,
-                                     const std::string &v) {
+    auto log_bind_fail = [&q, &statement](const std::string &name,
+                                          const std::string &v) {
       log::io() << DEBUG_WHERE << "Failed binding " << name << "(" << v
                 << ")\n";
 
-      sqlite3_finalize(statement);
+      finalize_statement(q.query, &statement);
     };
 
     int klen = static_cast<int>(key.length());
@@ -202,7 +254,7 @@ int delete_cache(const std::string &key, uint64_t at) noexcept {
     if (status != SQLITE_OK) {
       log::io() << DEBUG_WHERE << "Failed binding key(" << key << ")\n";
 
-      sqlite3_finalize(statement);
+      finalize_statement(q.query, &statement);
       return status;
     }
 
@@ -214,6 +266,20 @@ int delete_cache(const std::string &key, uint64_t at) noexcept {
   q.must_on_schedule = true;
 
   enqueue_write_query(q);
+
+  return 0;
+}
+
+int cleanup() noexcept {
+  std::lock_guard lk(stmt_cache_m);
+
+  auto i = stmt_cache.begin();
+  while (i != stmt_cache.end()) {
+    sqlite3_finalize(i->second);
+
+    i = stmt_cache.erase(i);
+  }
+  stmt_cache.rehash(0);
 
   return 0;
 }

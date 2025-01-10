@@ -6,6 +6,7 @@
 
 namespace ssplus_cache_me::query_runner {
 
+// this DOES NOT reset/destroy statement after running it
 int run_until_done(sqlite3_stmt *statement, const query_schedule_t &q,
                    sqlite3 *conn);
 

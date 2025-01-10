@@ -98,10 +98,7 @@ static int run_query(const query_schedule_t &q) {
     log::io() << "^^^ Error preparing statement: "
               << sqlite3_errmsg(main_state.db) << "\n";
 
-    if (stmt) {
-      sqlite3_finalize(stmt);
-      return status;
-    }
+    return status;
   }
 
   if (stmt == nullptr) {
@@ -242,7 +239,14 @@ static int init_db(const char *path) {
                    "UNIQUE PRIMARY KEY NOT NULL, \"value\" VARCHAR NOT NULL, "
                    "\"expires_at\" UNSIGNED BIG INT DEFAULT 0);";
 
-    init_q.run = query_runner::run_until_done;
+    init_q.run = [](sqlite3_stmt *statement, const query_schedule_t &q,
+                    sqlite3 *conn) -> int {
+      int status = query_runner::run_until_done(statement, q, conn);
+
+      // this statement only run once on boot so delete it immediately
+      db::finalize_statement(q.query, &statement);
+      return status;
+    };
 
     enqueue_write_query(init_q);
 
@@ -261,11 +265,16 @@ static int init_db(const char *path) {
         log::io() << DEBUG_WHERE << "Failed binding expires_at(" << cts
                   << ")\n";
 
-        sqlite3_finalize(statement);
+        // this statement only run once on boot so delete it immediately
+        db::finalize_statement(q.query, &statement);
         return status;
       }
 
-      return query_runner::run_until_done(statement, q, conn);
+      status = query_runner::run_until_done(statement, q, conn);
+
+      // this statement only run once on boot so delete it immediately
+      db::finalize_statement(q.query, &statement);
+      return status;
     };
 
     enqueue_write_query(delex_q);
@@ -352,6 +361,7 @@ int run(int argc, char *argv[]) {
   ssl_smanager.shutdown();
 
   shutdown_db();
+  db::cleanup();
 
   return 0;
 }

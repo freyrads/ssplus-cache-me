@@ -38,8 +38,6 @@ int run_until_done(sqlite3_stmt *statement, const query_schedule_t &q,
     }
   } while (status != SQLITE_DONE);
 
-  sqlite3_finalize(statement);
-
   return status;
 }
 } // namespace ssplus_cache_me::query_runner
