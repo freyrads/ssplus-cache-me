@@ -291,6 +291,8 @@ static int shutdown_db() {
   // finish all enqueued queries before shutdown
   run_queued_queries(true);
 
+  db::cleanup();
+
   if (main_state.db) {
     status = db::close(&main_state.db);
 
@@ -361,7 +363,6 @@ int run(int argc, char *argv[]) {
   ssl_smanager.shutdown();
 
   shutdown_db();
-  db::cleanup();
 
   return 0;
 }
