@@ -9,6 +9,7 @@
 #include "ssplus-cache-me/server_config.h"
 #include "ssplus-cache-me/util.h"
 #include "uWebSockets/src/App.h"
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <sqlite3.h>
@@ -56,6 +57,47 @@ template <bool WITH_SSL> class server_t {
   using uws_request_t = uWS::HttpRequest;
   // pair of key with data
   using cache_data_t = std::pair<std::string, cache::data_t>;
+
+  // endpoint_bench_t ////////////////////
+
+  struct endpoint_bench_t {
+    std::string name;
+    std::chrono::steady_clock::time_point start;
+    bool cancelled;
+
+    endpoint_bench_t() { begin(); }
+
+    explicit endpoint_bench_t(const std::string &_name) : name(_name) {
+      begin();
+    }
+
+    endpoint_bench_t &begin() {
+      cancelled = false;
+      start = std::chrono::steady_clock::now();
+
+      return *this;
+    }
+
+    endpoint_bench_t &set_name(const std::string &s) {
+      name = s;
+      return *this;
+    }
+
+    endpoint_bench_t &cancel(bool c = true) {
+      cancelled = c;
+      return *this;
+    }
+
+    ~endpoint_bench_t() {
+      if (cancelled || name.empty())
+        return;
+      log::io() << "[ENDPOINT_BENCH] [" << name
+                << "]: " << (std::chrono::steady_clock::now() - start).count()
+                << "ns\n";
+    }
+  };
+
+  ////////////////////////////////////////
 
   // http_response_t /////////////////////
 
@@ -306,6 +348,8 @@ template <bool WITH_SSL> class server_t {
     };
 
     auto get_cache = [this](uws_response_t *res, uws_request_t *req) {
+      endpoint_bench_t bench("GET /cache/:key");
+
       auto cors_headers = cors(res, req);
       if (cors_headers.empty())
         return;
@@ -324,20 +368,24 @@ template <bool WITH_SSL> class server_t {
     };
 
     auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
+      endpoint_bench_t bench("POST /cache");
+
       auto cors_headers = cors(res, req);
       if (cors_headers.empty())
         return;
 
-      http_handlers::post_cache(res, cors_headers);
+      http_handlers::post_cache(res, cors_headers, bench);
     };
 
     auto get_post_cache = [this](uws_response_t *res, uws_request_t *req) {
+      endpoint_bench_t bench("POST /cache/get-or-set");
+
       auto cors_headers = cors(res, req);
       if (cors_headers.empty())
         return;
 
       http_handlers::post_cache(
-          res, cors_headers,
+          res, cors_headers, bench,
           [this](http_response_t &hres, cache_data_t &data) -> bool {
             if (http_handlers::get_cache(hres, data.first, db_conn) == 0)
               return true;
@@ -348,6 +396,8 @@ template <bool WITH_SSL> class server_t {
     };
 
     auto delete_cache = [this](uws_response_t *res, uws_request_t *req) {
+      endpoint_bench_t bench("DELETE /cache/:key");
+
       auto cors_headers = cors(res, req);
       if (cors_headers.empty())
         return;
@@ -719,9 +769,15 @@ public:
 
     static inline int
     post_cache(uws_response_t *res, header_v_t &cors_headers,
+               endpoint_bench_t &bench,
                post_cache_custom_handler_fn custom_handler = nullptr) {
-      auto handle_body = [res, cors_headers,
-                          custom_handler](const std::string &body) {
+      bench.cancel();
+
+      auto handle_body = [res, cors_headers, custom_handler,
+                          bench](const std::string &body) {
+        endpoint_bench_t newbench{bench};
+        newbench.cancel(false);
+
         http_response_t hres(res, cors_headers);
 
         nlohmann::json body_json = parse_json_body(body, hres);
