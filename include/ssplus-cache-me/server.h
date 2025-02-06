@@ -429,7 +429,7 @@ template <bool WITH_SSL> class server_t {
         return;
 
       http_response_t hres(res, cors_headers);
-      // TODO
+      // TODO: what to do?
     };
 
     // log triggers
@@ -440,7 +440,7 @@ template <bool WITH_SSL> class server_t {
         return;
 
       http_response_t hres(res, cors_headers);
-      // TODO
+      // TODO: what to do?
     };
 
     // REGISTER ROUTES /////////////////////
@@ -449,12 +449,14 @@ template <bool WITH_SSL> class server_t {
     sapp->options("/*", options_cors);
     sapp->head("/*", options_cors);
 
+    // TODO: how do we implement these?
     // stat endpoints
-    sapp->get("/checkhealth", get_checkhealth);
+    // sapp->get("/checkhealth", get_checkhealth);
 
     // log triggers
-    sapp->get("/trigger_log/cache", get_trigger_log_cache);
+    // sapp->get("/trigger_log/cache", get_trigger_log_cache);
 
+    // The actual original routes are different, these only follows the doc in README.md
     // app endpoints
     sapp->get("/cache/:key", get_cache);
     sapp->post("/cache", post_cache);
