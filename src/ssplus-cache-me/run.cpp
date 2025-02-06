@@ -254,7 +254,8 @@ static int init_db(const char *path) {
     query_schedule_t delex_q("delete_expires");
 
     delex_q.query = "DELETE FROM \"cache\" WHERE "
-                    "\"expires_at\" <= ?1 ;";
+                    "\"expires_at\" != 0 "
+                    "AND \"expires_at\" <= ?1 ;";
 
     delex_q.run = [](sqlite3_stmt *statement, const query_schedule_t &q,
                      sqlite3 *conn) {
