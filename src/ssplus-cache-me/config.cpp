@@ -287,7 +287,7 @@ int parse_args(main_t &main_state, server::server_config_t &sconf, int argc,
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}};
 
-    c = getopt_long(argc, argv, "t:c:p:a:d:h", long_options, &option_index);
+    c = getopt_long(argc, argv, "t:c:p:m:a:d:h", long_options, &option_index);
     if (c == -1)
       break;
 
