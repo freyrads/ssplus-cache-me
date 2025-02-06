@@ -153,7 +153,7 @@ static void str_set_port(server::server_config_t &sconf, char *str_port) {
 
 static void str_set_cors_max_age(server::server_config_t &sconf,
                                  char *str_cors_max_age) {
-  uint64_t val = strtoull(str_cors_max_age);
+  uint64_t val = strtoull(str_cors_max_age, NULL, 10);
   if (val == ULLONG_MAX) {
     log::io() << error_messages.invalid_cors_max_age << "\n";
   } else if (val) {
