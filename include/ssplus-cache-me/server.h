@@ -31,6 +31,7 @@ namespace ssplus_cache_me::server {
 
 inline constexpr const struct {
   const char *OK_200 = "200 OK";
+  const char *CREATED_201 = "201 Created";
   const char *NO_CONTENT_204 = "204 No Content";
   const char *NOT_MODIFIED_304 = "304 Not Modified";
   const char *BAD_REQUEST_400 = "400 Bad Request";
@@ -825,6 +826,8 @@ public:
         db::set_cache(data.first, data.second);
 
         set_content_type_json(hres);
+        // POST should response with 201 created
+        hres.set_status(http_status_t.CREATED_201);
         hres.set_data(json_response::success(data.second.to_json()));
       };
 
