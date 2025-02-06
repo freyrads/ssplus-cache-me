@@ -1,5 +1,8 @@
 # SSPlus Cache Me
 
+A clone of [auliawiguna/go-cache-me](https://github.com/auliawiguna/go-cache-me) in C++ with a little bit of differences.
+Made for science.
+
 ## Compiling with Clang
 
 ```sh
