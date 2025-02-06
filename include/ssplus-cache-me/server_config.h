@@ -10,11 +10,12 @@ struct server_config_t {
   int port;
   // std::string certfile;
   // std::string pemfile;
+  uint64_t cors_max_age;
   std::vector<std::string> cors_enabled_origins;
 
   std::string db_path;
 
-  server_config_t() : port(3000) {}
+  server_config_t() : port(3000), cors_max_age(0) {}
 
   // bool with_ssl() { return !certfile.empty() && !pemfile.empty(); }
   bool with_ssl() { return false; }

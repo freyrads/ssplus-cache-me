@@ -334,10 +334,13 @@ template <bool WITH_SSL> class server_t {
     };
 
     auto options_cors = [this](uws_response_t *res, uws_request_t *req) {
-      auto cors_headers = cors(res, req,
-                               {
-                                   {"Access-Control-Max-Age", CORS_VALID_FOR},
-                               });
+      auto cors_headers =
+          cors(res, req,
+               {
+                   {"Access-Control-Max-Age",
+                    conf.cors_max_age != 0 ? std::to_string(conf.cors_max_age)
+                                           : CORS_VALID_FOR},
+               });
 
       if (cors_headers.empty())
         return;
@@ -456,8 +459,9 @@ template <bool WITH_SSL> class server_t {
     // log triggers
     // sapp->get("/trigger_log/cache", get_trigger_log_cache);
 
-    // The actual original routes are different, these only follows the doc in README.md
     // app endpoints
+    // The actual original routes are different, these only follows the doc in
+    // README.md
     sapp->get("/cache/:key", get_cache);
     sapp->post("/cache", post_cache);
     sapp->post("/cache/get-or-set", get_post_cache);

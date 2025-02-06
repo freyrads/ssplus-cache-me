@@ -26,9 +26,10 @@ namespace ssplus_cache_me::config {
  *                     first if exist before other env config
  *
  * Server configs:
- * PORT              : unsigned integer, any valid port
- * SPLUS_ALLOW_CORS  : string, a list, coma separated origins
- * SPLUS_DB          : string, path to sqlite db
+ * PORT               : unsigned integer, any valid port
+ * SPLUS_CORS_MAX_AGE : unsigned integer, for cors Access-Control-Max-Age header
+ * SPLUS_ALLOW_CORS   : string, a list, coma separated origins
+ * SPLUS_DB           : string, path to sqlite db
  *
  */
 inline constexpr const struct {
@@ -36,6 +37,7 @@ inline constexpr const struct {
 
   const char *concurrency = "SPLUS_CONCURRENCY";
   const char *port = "PORT";
+  const char *cors_max_age = "SPLUS_CORS_MAX_AGE";
   const char *allow_cors = "SPLUS_ALLOW_CORS";
   const char *database = "SPLUS_DB";
 } env_keys;
@@ -48,14 +50,16 @@ inline constexpr const struct {
  *               server
  *
  * Server configs:
- * port        : unsigned integer, any valid port
- * allow_cors  : string, a list, coma separated origins
- * database    : string, path to sqlite db
+ * port         : unsigned integer, any valid port
+ * cors_max_age : unsigned integer, for cors Access-Control-Max-Age header
+ * allow_cors   : string, a list, coma separated origins
+ * database     : string, path to sqlite db
  *
  * Example:
  * {
  *    "concurrency": 8,
  *    "port": 3000,
+ *    "cors_max_age": 86400,
  *    "allow_cors": "https://www.google.com,https://www.yahoo.com",
  *    "database": "/home/app/cache.sqlite3"
  * }
@@ -63,6 +67,7 @@ inline constexpr const struct {
 inline constexpr const struct {
   const char *concurrency = "concurrency";
   const char *port = "port";
+  const char *cors_max_age = "cors_max_age";
   const char *allow_cors = "allow_cors";
   const char *database = "database";
 } json_keys;
@@ -71,13 +76,14 @@ inline constexpr const struct {
  * Program arguments for configs:
  *
  * Program configs:
- * -t, --concurrency : unsigned integer, number of thread which run the server
- * -c, --config      : string, path to json config
+ * -t, --concurrency  : unsigned integer, number of thread which run the server
+ * -c, --config       : string, path to json config
  *
  * Server configs:
- * -p, --port        : unsigned integer, any valid port
- * -a, --allow-cors  : string, a list, coma separated origins
- * -d, --database    : string, path to sqlite db
+ * -p, --port         : unsigned integer, any valid port
+ * -m, --cors-max-age : unsigned integer, for cors Access-Control-Max-Age header
+ * -a, --allow-cors   : string, a list, coma separated origins
+ * -d, --database     : string, path to sqlite db
  *
  * Non-config arguments:
  * -h, --help        : print help
@@ -92,16 +98,21 @@ static void print_usage() {
     const char *opt;
     const char *arg;
     const char *desc;
-  } arglist[] = {
-      {"-h, --help", "", "Print this message and exit."},
-      {"-t, --concurrency", "<int>", "Number of thread which run the server. Default is available CPU cores."},
-      {"-c, --config", "</path/to/conf.json>",
-       "Load configuration from a JSON file."},
+  } arglist[] = {{"-h, --help", "", "Print this message and exit."},
+                 {"-t, --concurrency", "<uint>",
+                  "Number of thread which run the server. Default is available "
+                  "CPU cores."},
+                 {"-c, --config", "</path/to/conf.json>",
+                  "Load configuration from a JSON file."},
 
-      {"-p, --port", "<int>", "Port to listen on. Default 3000."},
-      {"-a, --allow-cors", "<origins...>",
-       "List of origin enabled for CORS, separated by coma (,)."},
-      {"-d, --database", "</path/to/db.sqlite3>", "Cache database to use. Default \"cache.sqlite3\""}};
+                 {"-p, --port", "<uint>", "Port to listen on. Default 3000."},
+                 {"-m, --cors-max-age", "<uint>",
+                  "CORS header Max Age. Default is CORS_VALID_FOR compile "
+                  "definition, or 84000"},
+                 {"-a, --allow-cors", "<origins...>",
+                  "List of origin enabled for CORS, separated by coma (,)."},
+                 {"-d, --database", "</path/to/db.sqlite3>",
+                  "Cache database to use. Default \"cache.sqlite3\""}};
 
   for (size_t i = 0; i < sizeof(arglist) / sizeof(*arglist); i++) {
     auto &v = arglist[i];
@@ -115,6 +126,7 @@ inline constexpr const struct {
   const char *invalid_port = "Invalid port, skipping";
   const char *invalid_cors = "Invalid allow_cors, skipping";
   const char *invalid_database = "Invalid database, skipping";
+  const char *invalid_cors_max_age = "Invalid cors_max_age, skipping";
   /*const char *invalid_;*/
 } error_messages;
 
@@ -139,6 +151,16 @@ static void str_set_port(server::server_config_t &sconf, char *str_port) {
   }
 }
 
+static void str_set_cors_max_age(server::server_config_t &sconf,
+                                 char *str_cors_max_age) {
+  uint64_t val = strtoull(str_cors_max_age);
+  if (i == ULLONG_MAX) {
+    log::io() << error_messages.invalid_cors_max_age << "\n";
+  } else if (val) {
+    sconf.cors_max_age = val;
+  }
+}
+
 void load_env(main_t &main_state, server::server_config_t &sconf) {
   auto has = [](char *v) -> bool { return v && strlen(v) > 0; };
 
@@ -157,6 +179,11 @@ void load_env(main_t &main_state, server::server_config_t &sconf) {
   char *str_port = std::getenv(env_keys.port);
   if (has(str_port)) {
     str_set_port(sconf, str_port);
+  }
+
+  char *str_cors_max_age = std::getenv(env_keys.cors_max_age);
+  if (has(str_cors_max_age)) {
+    str_set_cors_max_age(sconf, str_cors_max_age);
   }
 
   char *str_allow_cors = std::getenv(env_keys.allow_cors);
@@ -209,6 +236,15 @@ void parse_json_config(main_t &main_state, server::server_config_t &sconf,
     }
   }
 
+  i = data.find(json_keys.cors_max_age);
+  if (i != data.end()) {
+    if (!i->is_number_unsigned()) {
+      log::io() << error_messages.invalid_cors_max_age << "\n";
+    } else {
+      sconf.cors_max_age = i->get<uint64_t>();
+    }
+  }
+
   i = data.find(json_keys.allow_cors);
   if (i != data.end()) {
     std::string v;
@@ -244,6 +280,7 @@ int parse_args(main_t &main_state, server::server_config_t &sconf, int argc,
         {"concurrency", required_argument, 0, 't'},
         {"config", required_argument, 0, 'c'},
         {"port", required_argument, 0, 'p'},
+        {"cors-max-age", required_argument, 0, 'm'},
         {"allow-cors", required_argument, 0, 'a'},
         {"database", required_argument, 0, 'd'},
 
@@ -273,6 +310,9 @@ int parse_args(main_t &main_state, server::server_config_t &sconf, int argc,
       break;
     case 'p':
       str_set_port(sconf, optarg);
+      break;
+    case 'm':
+      str_set_cors_max_age(sconf, optarg);
       break;
     case 'a':
       sconf.set_cors_enabled_origins(optarg);
