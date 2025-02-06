@@ -108,7 +108,7 @@ static void print_usage() {
                  {"-p, --port", "<uint>", "Port to listen on. Default 3000."},
                  {"-m, --cors-max-age", "<uint>",
                   "CORS header Max Age. Default is CORS_VALID_FOR compile "
-                  "definition, or 84000."},
+                  "definition, or 86400."},
                  {"-a, --allow-cors", "<origins...>",
                   "List of origin enabled for CORS, separated by coma (,)."},
                  {"-d, --database", "</path/to/db.sqlite3>",
