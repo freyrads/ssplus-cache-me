@@ -58,22 +58,20 @@ static std::unordered_map<std::string, sqlite3_stmt *> stmt_cache;
 static std::shared_mutex stmt_cache_m;
 
 // any create failure won't
-int prepare_statement(sqlite3 *conn, const char *query,
-                      sqlite3_stmt **stmt) noexcept {
+int prepare_statement(sqlite3 *conn, const char *query, sqlite3_stmt **stmt,
+                      const std::string &stmt_key) noexcept {
   int status = 0;
+
+  const std::string stmt_cache_key = stmt_key.empty() ? query : stmt_key;
 
   {
     // find it in cache first
     std::shared_lock lk(stmt_cache_m);
 
-    auto i = stmt_cache.find(query);
+    auto i = stmt_cache.find(stmt_cache_key);
     if (i != stmt_cache.end()) {
       // found, return early
       *stmt = i->second;
-
-      // make sure this statement is ready
-      sqlite3_reset(*stmt);
-      sqlite3_clear_bindings(*stmt);
 
       return status;
     }
@@ -94,13 +92,24 @@ int prepare_statement(sqlite3 *conn, const char *query,
   } else {
     // save this statement in cache
     std::lock_guard lk(stmt_cache_m);
-    stmt_cache.insert_or_assign(std::string{query}, *stmt);
+    stmt_cache.insert_or_assign(stmt_cache_key, *stmt);
+
+    log::io() << "Statement cached: `" << stmt_cache_key << "`\n";
   }
 
   return status;
 }
 
-static int finalize_statement_unlocked(const std::string &query,
+void reset_statement(sqlite3_stmt **stmt) noexcept {
+  if (*stmt == nullptr)
+    return;
+
+  // make sure this statement is ready for the next query
+  sqlite3_reset(*stmt);
+  sqlite3_clear_bindings(*stmt);
+}
+
+static int finalize_statement_unlocked(const std::string &stmt_key,
                                        sqlite3_stmt **stmt) noexcept {
   int status = 0;
 
@@ -109,25 +118,29 @@ static int finalize_statement_unlocked(const std::string &query,
     *stmt = nullptr;
   }
 
-  if (!query.empty()) {
-    auto i = stmt_cache.find(query);
+  if (!stmt_key.empty()) {
+    auto i = stmt_cache.find(stmt_key);
     if (i == stmt_cache.end()) {
       return status;
     }
 
     stmt_cache.erase(i);
     stmt_cache.rehash(0);
+
+    log::io() << "Statement destroyed: `" << stmt_key << "`\n";
   }
 
   return status;
 }
 
-int finalize_statement(const std::string &query, sqlite3_stmt **stmt) noexcept {
+int finalize_statement(const std::string &stmt_key,
+                       sqlite3_stmt **stmt) noexcept {
   std::lock_guard lk(stmt_cache_m);
-  return finalize_statement_unlocked(query, stmt);
+  return finalize_statement_unlocked(stmt_key, stmt);
 }
 
-cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
+cache::data_t get_cache(sqlite3 *conn, const std::string &key,
+                        int server_id) noexcept {
   cache::data_t ret;
   if (key.empty())
     return ret;
@@ -136,11 +149,13 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
       "SELECT \"value\",\"expires_at\" FROM \"cache\" WHERE \"key\" = ?1 ;";
 
   sqlite3_stmt *statement = nullptr;
-  int status = prepare_statement(conn, query.c_str(), &statement);
+  std::string stmt_cache_key = query + std::to_string(server_id);
+  int status =
+      prepare_statement(conn, query.c_str(), &statement, stmt_cache_key);
 
   int klen = static_cast<int>(key.length());
   if (status != SQLITE_OK)
-    goto ret;
+    goto err;
 
   status = sqlite3_bind_text(statement, 1, key.c_str(), klen, SQLITE_STATIC);
 
@@ -149,7 +164,7 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
               << ") to query with status(" << status << "):\n"
               << query << "\n\n";
 
-    goto ret;
+    goto err;
   }
 
   // execute statement
@@ -162,8 +177,12 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept {
     ret.expires_at = static_cast<uint64_t>(sqlite3_column_int64(statement, 1));
   }
 
-ret:
-  finalize_statement(query, &statement);
+  reset_statement(&statement);
+
+  return ret;
+
+err:
+  finalize_statement(stmt_cache_key, &statement);
 
   return ret;
 }
@@ -185,19 +204,19 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
             "\"value\" = ?2, "
             "\"expires_at\" = ?3 ;";
 
-  q.run = [key, data](sqlite3_stmt *statement, const query_schedule_t &q,
+  q.run = [key, data](sqlite3_stmt **statement, const query_schedule_t &q,
                       sqlite3 *conn) -> int {
     auto log_bind_fail = [&q, &statement](const std::string &name,
                                           const std::string &v) {
       log::io() << DEBUG_WHERE << "Failed binding " << name << "(" << v
                 << ")\n";
 
-      finalize_statement(q.query, &statement);
+      finalize_statement(q.query, statement);
     };
 
     int klen = static_cast<int>(key.length());
     int status =
-        sqlite3_bind_text(statement, 1, key.c_str(), klen, SQLITE_STATIC);
+        sqlite3_bind_text(*statement, 1, key.c_str(), klen, SQLITE_STATIC);
 
     if (status != SQLITE_OK) {
       log_bind_fail("key", key);
@@ -205,7 +224,7 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
     }
 
     int vlen = static_cast<int>(data.value.length());
-    status = sqlite3_bind_text(statement, 2, data.value.c_str(), vlen,
+    status = sqlite3_bind_text(*statement, 2, data.value.c_str(), vlen,
                                SQLITE_STATIC);
 
     if (status != SQLITE_OK) {
@@ -213,7 +232,7 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
       return status;
     }
 
-    status = sqlite3_bind_int64(statement, 3,
+    status = sqlite3_bind_int64(*statement, 3,
                                 static_cast<int64_t>(data.get_expires_at()));
 
     if (status != SQLITE_OK) {
@@ -221,7 +240,7 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
       return status;
     }
 
-    return query_runner::run_until_done(statement, q, conn);
+    return query_runner::run_until_done(*statement, q, conn);
   };
 
   enqueue_write_query(q);
@@ -243,22 +262,22 @@ int delete_cache(const std::string &key, uint64_t at) noexcept {
 
   q.query = "DELETE FROM \"cache\" WHERE \"key\" = ?1 ;";
 
-  q.run = [key](sqlite3_stmt *statement, const query_schedule_t &q,
+  q.run = [key](sqlite3_stmt **statement, const query_schedule_t &q,
                 sqlite3 *conn) -> int {
     cache::del(key);
 
     int klen = static_cast<int>(key.length());
     int status =
-        sqlite3_bind_text(statement, 1, key.c_str(), klen, SQLITE_STATIC);
+        sqlite3_bind_text(*statement, 1, key.c_str(), klen, SQLITE_STATIC);
 
     if (status != SQLITE_OK) {
       log::io() << DEBUG_WHERE << "Failed binding key(" << key << ")\n";
 
-      finalize_statement(q.query, &statement);
+      finalize_statement(q.query, statement);
       return status;
     }
 
-    return query_runner::run_until_done(statement, q, conn);
+    return query_runner::run_until_done(*statement, q, conn);
   };
 
   q.ts = at;
@@ -276,6 +295,8 @@ int cleanup() noexcept {
   auto i = stmt_cache.begin();
   while (i != stmt_cache.end()) {
     sqlite3_finalize(i->second);
+
+    log::io() << "Statement destroyed: `" << i->first << "`\n";
 
     i = stmt_cache.erase(i);
   }

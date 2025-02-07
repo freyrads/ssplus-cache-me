@@ -17,7 +17,7 @@ namespace ssplus_cache_me {
 
 struct query_schedule_t {
   using run_fn =
-      std::function<int(sqlite3_stmt *, const query_schedule_t &, sqlite3 *)>;
+      std::function<int(sqlite3_stmt **, const query_schedule_t &, sqlite3 *)>;
 
   std::string id;
 

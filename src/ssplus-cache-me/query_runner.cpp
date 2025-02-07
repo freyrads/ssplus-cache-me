@@ -19,7 +19,8 @@ int run_until_done(sqlite3_stmt *statement, const query_schedule_t &q,
       break;
 
     if (status == SQLITE_BUSY) {
-      log::io() << "Database is busy, rescheduling query...\n";
+      log::io() << "Database is busy (" << sqlite3_errmsg(conn)
+                << "), rescheduling query...\n";
 
       // lets reschedule this 5 second later
       query_schedule_t newq(q);

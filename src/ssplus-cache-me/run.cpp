@@ -106,7 +106,10 @@ static int run_query(const query_schedule_t &q) {
     return 0;
   }
 
-  status = q.run(stmt, q, main_state.db);
+  status = q.run(&stmt, q, main_state.db);
+
+  // make sure this statement is ready for the next query
+  db::reset_statement(&stmt);
 
   return status;
 }
@@ -239,12 +242,12 @@ static int init_db(const char *path) {
                    "UNIQUE PRIMARY KEY NOT NULL, \"value\" VARCHAR NOT NULL, "
                    "\"expires_at\" UNSIGNED BIG INT DEFAULT 0);";
 
-    init_q.run = [](sqlite3_stmt *statement, const query_schedule_t &q,
+    init_q.run = [](sqlite3_stmt **statement, const query_schedule_t &q,
                     sqlite3 *conn) -> int {
-      int status = query_runner::run_until_done(statement, q, conn);
+      int status = query_runner::run_until_done(*statement, q, conn);
 
       // this statement only run once on boot so delete it immediately
-      db::finalize_statement(q.query, &statement);
+      db::finalize_statement(q.query, statement);
       return status;
     };
 
@@ -257,24 +260,24 @@ static int init_db(const char *path) {
                     "\"expires_at\" != 0 "
                     "AND \"expires_at\" <= ?1 ;";
 
-    delex_q.run = [](sqlite3_stmt *statement, const query_schedule_t &q,
+    delex_q.run = [](sqlite3_stmt **statement, const query_schedule_t &q,
                      sqlite3 *conn) {
       auto cts = util::get_current_ts();
-      int status = sqlite3_bind_int64(statement, 1, static_cast<int64_t>(cts));
+      int status = sqlite3_bind_int64(*statement, 1, static_cast<int64_t>(cts));
 
       if (status != SQLITE_OK) {
         log::io() << DEBUG_WHERE << "Failed binding expires_at(" << cts
                   << ")\n";
 
         // this statement only run once on boot so delete it immediately
-        db::finalize_statement(q.query, &statement);
+        db::finalize_statement(q.query, statement);
         return status;
       }
 
-      status = query_runner::run_until_done(statement, q, conn);
+      status = query_runner::run_until_done(*statement, q, conn);
 
       // this statement only run once on boot so delete it immediately
-      db::finalize_statement(q.query, &statement);
+      db::finalize_statement(q.query, statement);
       return status;
     };
 
@@ -360,10 +363,12 @@ int run(int argc, char *argv[]) {
 
   main_loop();
 
+  // closing per server db connection won't be clean
+  // unless all statement has been reset
+  shutdown_db();
+
   smanager.shutdown();
   ssl_smanager.shutdown();
-
-  shutdown_db();
 
   return 0;
 }

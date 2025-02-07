@@ -368,7 +368,7 @@ template <bool WITH_SSL> class server_t {
 
       std::string str_key(key);
 
-      http_handlers::get_cache(hres, str_key, db_conn);
+      http_handlers::get_cache(hres, str_key, db_conn, id);
     };
 
     auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
@@ -391,7 +391,7 @@ template <bool WITH_SSL> class server_t {
       http_handlers::post_cache(
           res, cors_headers, bench,
           [this](http_response_t &hres, cache_data_t &data) -> bool {
-            if (http_handlers::get_cache(hres, data.first, db_conn) == 0)
+            if (http_handlers::get_cache(hres, data.first, db_conn, id) == 0)
               return true;
 
             hres.reset(hres.res);
@@ -739,12 +739,13 @@ public:
 
   struct http_handlers {
     static inline int get_cache(http_response_t &hres,
-                                const std::string &str_key, sqlite3 *db_conn) {
+                                const std::string &str_key, sqlite3 *db_conn,
+                                int server_id) {
       auto cached = cache::get(str_key);
       if (!cached.cached()) {
         // key is not in cache
         // try to find it in db and cache it
-        cached = db::get_cache(db_conn, str_key);
+        cached = db::get_cache(db_conn, str_key, server_id);
 
         auto eat = cached.get_expires_at();
         if (eat != 0) {

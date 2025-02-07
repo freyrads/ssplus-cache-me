@@ -13,12 +13,17 @@ int init(const char *path, sqlite3 **out) noexcept;
 
 int close(sqlite3 **conn) noexcept;
 
-int prepare_statement(sqlite3 *conn, const char *query,
-                      sqlite3_stmt **stmt) noexcept;
+int prepare_statement(sqlite3 *conn, const char *query, sqlite3_stmt **stmt,
+                      const std::string &stmt_key = std::string()) noexcept;
 
-int finalize_statement(const std::string &query, sqlite3_stmt **stmt) noexcept;
+void reset_statement(sqlite3_stmt **stmt) noexcept;
 
-cache::data_t get_cache(sqlite3 *conn, const std::string &key) noexcept;
+int finalize_statement(const std::string &stmt_key,
+                       sqlite3_stmt **stmt) noexcept;
+
+// only servers are allowed to call this
+cache::data_t get_cache(sqlite3 *conn, const std::string &key,
+                        int server_id) noexcept;
 int set_cache(const std::string &key, const cache::data_t &data) noexcept;
 int delete_cache(const std::string &key, uint64_t at = 0) noexcept;
 
