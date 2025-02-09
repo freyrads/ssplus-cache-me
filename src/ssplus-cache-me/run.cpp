@@ -375,14 +375,27 @@ int run(int argc, char *argv[]) {
 
 main_t *get_main_state() noexcept { return &main_state; }
 
+static bool remove_query_unlocked(const query_schedule_t &q) noexcept {
+  auto i = std::find(main_state.write_queries.begin(),
+                     main_state.write_queries.end(), q);
+  if (i != main_state.write_queries.end()) {
+    main_state.write_queries.erase(i);
+    return true;
+  }
+
+  return false;
+}
+
+bool remove_query(const query_schedule_t &q) noexcept {
+  std::lock_guard lk(main_state.mm);
+  return remove_query_unlocked(q);
+}
+
 void enqueue_write_query(const query_schedule_t &q) {
   std::lock_guard lk(main_state.mm);
 
   // remove all schedule with the same id
-  auto i = std::find(main_state.write_queries.begin(),
-                     main_state.write_queries.end(), q);
-  if (i != main_state.write_queries.end())
-    main_state.write_queries.erase(i);
+  remove_query_unlocked(q);
 
   main_state.write_queries.push_back(q);
   main_state.mcv.notify_one();

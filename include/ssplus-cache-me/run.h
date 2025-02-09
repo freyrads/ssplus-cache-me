@@ -124,6 +124,8 @@ int run(int argc, char *argv[]);
 
 main_t *get_main_state() noexcept;
 
+bool remove_query(const query_schedule_t &q) noexcept;
+
 void enqueue_write_query(const query_schedule_t &q);
 
 const char *get_exe_name() noexcept;

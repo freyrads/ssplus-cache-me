@@ -247,7 +247,10 @@ int set_cache(const std::string &key, const cache::data_t &data) noexcept {
 
   // schedule delete if it has expires_at
   auto eat = data.get_expires_at();
-  if (eat != 0) {
+  if (eat == 0) {
+    // erase delete query which might exist
+    remove_query({"del/" + key});
+  } else {
     delete_cache(key, eat);
   }
 
