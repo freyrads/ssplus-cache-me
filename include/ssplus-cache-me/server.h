@@ -371,6 +371,18 @@ template <bool WITH_SSL> class server_t {
       http_handlers::get_cache(hres, str_key, db_conn, id);
     };
 
+    auto get_all_cache = [this](uws_response_t *res, uws_request_t *req) {
+      endpoint_bench_t bench("GET /cache");
+
+      auto cors_headers = cors(res, req);
+      if (cors_headers.empty())
+        return;
+
+      http_response_t hres(res, cors_headers);
+
+      http_handlers::get_cache(hres, "", db_conn, id);
+    };
+
     auto post_cache = [this](uws_response_t *res, uws_request_t *req) {
       endpoint_bench_t bench("POST /cache");
 
@@ -423,29 +435,30 @@ template <bool WITH_SSL> class server_t {
       db::delete_cache(str_key);
 
       set_content_type_json(hres);
-      hres.set_data(json_response::success({{"message", "OK"}}));
+      // DELETE should response with 204 No Content
+      hres.set_status(http_status_t.NO_CONTENT_204);
     };
 
     // stat endpoints
-    auto get_checkhealth = [this](uws_response_t *res, uws_request_t *req) {
-      auto cors_headers = cors(res, req);
-      if (cors_headers.empty())
-        return;
+    // auto get_checkhealth = [this](uws_response_t *res, uws_request_t *req) {
+    //   auto cors_headers = cors(res, req);
+    //   if (cors_headers.empty())
+    //     return;
 
-      http_response_t hres(res, cors_headers);
-      // TODO: what to do?
-    };
+    //   http_response_t hres(res, cors_headers);
+    //   // TODO: what to do?
+    // };
 
     // log triggers
-    auto get_trigger_log_cache = [this](uws_response_t *res,
-                                        uws_request_t *req) {
-      auto cors_headers = cors(res, req);
-      if (cors_headers.empty())
-        return;
+    // auto get_trigger_log_cache = [this](uws_response_t *res,
+    //                                     uws_request_t *req) {
+    //   auto cors_headers = cors(res, req);
+    //   if (cors_headers.empty())
+    //     return;
 
-      http_response_t hres(res, cors_headers);
-      // TODO: what to do?
-    };
+    //   http_response_t hres(res, cors_headers);
+    //   // TODO: what to do?
+    // };
 
     // REGISTER ROUTES /////////////////////
     // 404, cors middleware
@@ -461,12 +474,31 @@ template <bool WITH_SSL> class server_t {
     // sapp->get("/trigger_log/cache", get_trigger_log_cache);
 
     // app endpoints
+
+#ifndef SS_COMP
     // The actual original routes are different, these only follows the doc in
     // README.md
+
     sapp->get("/cache/:key", get_cache);
+    sapp->get("/cache", get_all_cache); // bonus endpoint?
     sapp->post("/cache", post_cache);
     sapp->post("/cache/get-or-set", get_post_cache);
     sapp->del("/cache/:key", delete_cache);
+#else
+    // SS Production compatible routing
+
+    // POST    /api/caches
+    // GET     /api/caches
+    // GET     /api/caches/key/:key
+    // DELETE  /api/caches/:key
+    // POST    /api/caches/get-or-set
+
+    sapp->post("/api/caches", post_cache);
+    sapp->get("/api/caches", get_all_cache);
+    sapp->get("/api/caches/key/:key", get_cache);
+    sapp->del("/api/caches/:key", delete_cache);
+    sapp->post("/api/caches/get-or-set", get_post_cache);
+#endif // SS_COMP
   }
 
 public:
@@ -741,6 +773,38 @@ public:
     static inline int get_cache(http_response_t &hres,
                                 const std::string &str_key, sqlite3 *db_conn,
                                 int server_id) {
+      if (str_key.empty()) {
+        // get all cache entry and returns early here
+        auto cached = cache::get_all();
+        if (cached.second == false) {
+          // cache vector isn't populated,
+          // fetch from db
+          cached.first = db::get_all_cache(db_conn, server_id);
+
+          cached = cache::set_all(cached.first, true);
+        }
+
+        set_content_type_json(hres);
+
+        nlohmann::json data = nlohmann::json::object();
+        for (size_t i = 0; i < cached.first.size(); i++) {
+          const auto &d = cached.first.at(i);
+          // "Value","ExpiresAt"
+          data[std::to_string(i)] = {{"Value", d.value},
+                                     {"ExpiresAt", d.get_expires_at()}};
+        }
+
+        hres.set_data(
+#ifndef SS_COMP
+            json_response::success(data)
+#else
+            data
+#endif // SS_COMP
+        );
+
+        return 0;
+      }
+
       auto cached = cache::get(str_key);
       if (!cached.cached()) {
         // key is not in cache
@@ -771,7 +835,13 @@ public:
       }
 
       set_content_type_json(hres);
-      hres.set_data(json_response::success(cached.to_json()));
+      hres.set_data(
+#ifndef SS_COMP
+          json_response::success(cached.to_json())
+#else
+          cached.value
+#endif // SS_COMP
+      );
       return 0;
     }
 
@@ -829,7 +899,13 @@ public:
         set_content_type_json(hres);
         // POST should response with 201 created
         hres.set_status(http_status_t.CREATED_201);
-        hres.set_data(json_response::success(data.second.to_json()));
+        hres.set_data(
+#ifndef SS_COMP
+            json_response::success(data.second.to_json())
+#else
+            data.second.value
+#endif // SS_COMP
+        );
       };
 
       res_handle_body(res, std::move(handle_body));

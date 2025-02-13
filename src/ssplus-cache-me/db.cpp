@@ -149,7 +149,7 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key,
       "SELECT \"value\",\"expires_at\" FROM \"cache\" WHERE \"key\" = ?1 ;";
 
   sqlite3_stmt *statement = nullptr;
-  std::string stmt_cache_key = query + std::to_string(server_id);
+  std::string stmt_cache_key = std::to_string(server_id) + "s";
   int status =
       prepare_statement(conn, query.c_str(), &statement, stmt_cache_key);
 
@@ -175,6 +175,42 @@ cache::data_t get_cache(sqlite3 *conn, const std::string &key,
         reinterpret_cast<const char *>(sqlite3_column_text(statement, 0));
 
     ret.expires_at = static_cast<uint64_t>(sqlite3_column_int64(statement, 1));
+  }
+
+  reset_statement(&statement);
+
+  return ret;
+
+err:
+  finalize_statement(stmt_cache_key, &statement);
+
+  return ret;
+}
+
+// only servers are allowed to call this
+cache::vector_data_t get_all_cache(sqlite3 *conn, int server_id) noexcept {
+  cache::vector_data_t ret;
+
+  std::string query = "SELECT \"value\",\"expires_at\" FROM \"cache\";";
+
+  sqlite3_stmt *statement = nullptr;
+  std::string stmt_cache_key = std::to_string(server_id) + "a";
+  int status =
+      prepare_statement(conn, query.c_str(), &statement, stmt_cache_key);
+
+  cache::data_t temp;
+  if (status != SQLITE_OK)
+    goto err;
+
+  // execute statement
+  while ((status = sqlite3_step(statement)) == SQLITE_ROW) {
+    // columns: "value","expires_at"
+    temp.value =
+        reinterpret_cast<const char *>(sqlite3_column_text(statement, 0));
+
+    temp.expires_at = static_cast<uint64_t>(sqlite3_column_int64(statement, 1));
+
+    ret.emplace_back(temp);
   }
 
   reset_statement(&statement);

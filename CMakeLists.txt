@@ -24,6 +24,7 @@ option(DEBUG "Build ${CMAKE_PROJECT_NAME} with debug symbol" ON)
 option(EXTERNAL_JSON "Use external nlohmann/json instead of the one included in the repo" OFF)
 option(REQUIRE_ORIGIN_HEADER "Require `Origin` header to always be present in request other than GET and HEAD" OFF)
 option(FORCE_LOG_TS_UTC "Force log timestamp to UTC regardless of local timezone" OFF)
+option(SS_COMP "Build SS Production compatible API" OFF)
 
 # ================================================================================
 
@@ -87,6 +88,10 @@ endif()
 if (CORS_VALID_FOR)
 	message("-- INFO: CORS_VALID_FOR=${CORS_VALID_FOR}")
 	target_compile_definitions(${MAIN_EXE} PRIVATE CORS_VALID_FOR=${CORS_VALID_FOR})
+endif()
+if (SS_COMP)
+	message("-- INFO: Building SS Production compatible API")
+	target_compile_definitions(${MAIN_EXE} PRIVATE SS_COMP)
 endif()
 
 file(GLOB_RECURSE USOCKETS_SOURCES

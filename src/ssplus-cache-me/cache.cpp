@@ -87,6 +87,20 @@ std::string data_t::to_json_str(int indent) const {
 static cache_map_t mcache;
 static std::shared_mutex mcache_m;
 
+static vector_data_t mallcache;
+static bool mallcache_loaded = false;
+static std::shared_mutex mallcache_m;
+
+static void reset_mallcache_unlocked() {
+  mallcache.clear();
+  mallcache_loaded = false;
+}
+
+static void reset_mallcache() {
+  std::lock_guard lk(mallcache_m);
+  return reset_mallcache_unlocked();
+}
+
 [[nodiscard]] std::lock_guard<std::shared_mutex> acquire_lock() {
   return std::lock_guard(mcache_m);
 }
@@ -105,11 +119,18 @@ data_t get_unlocked(const std::string &key) {
 
 data_t get(const std::string &key) {
   std::shared_lock lk(mcache_m);
-
   return get_unlocked(key);
 }
 
+get_all_return_t get_all_unlocked() { return {mallcache, mallcache_loaded}; }
+
+get_all_return_t get_all() {
+  std::shared_lock lk(mallcache_m);
+  return get_all_unlocked();
+}
+
 set_return_t set_unlocked(const std::string &key, const data_t &value) {
+  reset_mallcache();
   return mcache.insert_or_assign(key, value);
 }
 
@@ -118,7 +139,22 @@ set_return_t set(const std::string &key, const data_t &value) {
   return set_unlocked(key, value);
 }
 
-size_t del_unlocked(const std::string &key) { return mcache.erase(key); }
+get_all_return_t set_all_unlocked(const vector_data_t &values,
+                                  bool loaded_state) {
+  mallcache = values;
+  mallcache_loaded = loaded_state;
+  return {mallcache, mallcache_loaded};
+}
+
+get_all_return_t set_all(const vector_data_t &values, bool loaded_state) {
+  std::lock_guard lk(mallcache_m);
+  return set_all_unlocked(values, loaded_state);
+}
+
+size_t del_unlocked(const std::string &key) {
+  reset_mallcache();
+  return mcache.erase(key);
+}
 
 size_t del(const std::string &key) {
   std::lock_guard lk(mcache_m);

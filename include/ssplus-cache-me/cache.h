@@ -42,6 +42,8 @@ struct data_t {
 
 using cache_map_t = std::unordered_map<std::string, data_t>;
 using set_return_t = std::pair<cache_map_t::iterator, bool>;
+using vector_data_t = std::vector<data_t>;
+using get_all_return_t = std::pair<vector_data_t, bool>;
 
 std::lock_guard<std::shared_mutex> acquire_lock();
 std::shared_lock<std::shared_mutex> acquire_shared_lock();
@@ -49,8 +51,15 @@ std::shared_lock<std::shared_mutex> acquire_shared_lock();
 data_t get_unlocked(const std::string &key);
 data_t get(const std::string &key);
 
+get_all_return_t get_all_unlocked();
+get_all_return_t get_all();
+
 set_return_t set_unlocked(const std::string &key, const data_t &value);
 set_return_t set(const std::string &key, const data_t &value);
+
+get_all_return_t set_all_unlocked(const vector_data_t &values,
+                                  bool loaded_state);
+get_all_return_t set_all(const vector_data_t &values, bool loaded_state);
 
 size_t del_unlocked(const std::string &key);
 size_t del(const std::string &key);
